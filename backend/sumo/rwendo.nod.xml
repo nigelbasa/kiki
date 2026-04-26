@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Rwendo SUMO node topology.
+  Coordinate system: SUMO y grows southward here (same axis as three.js z in the canvas).
+  Signal plans are governed by TraCI at runtime.
+  TL_11 is a T-junction — no north arm.
+-->
+<nodes>
+    <!-- Controlled intersections -->
+    <node id="TL_00" x="0"  y="0"  type="traffic_light" tl="TL_00"/>
+    <node id="TL_10" x="0"   y="72" type="traffic_light" tl="TL_10"/>
+    <node id="TL_11" x="150" y="72" type="traffic_light" tl="TL_11"/>
+
+    <!-- TL_00 external stubs: north arm + west arm -->
+    <node id="EXT_TL00_N" x="0"   y="-90" type="priority"/>
+    <node id="EXT_TL00_W" x="-90" y="0"   type="priority"/>
+
+    <!-- TL_10 external stubs: south arm + west arm -->
+    <node id="EXT_TL10_S" x="0"   y="162" type="priority"/>
+    <node id="EXT_TL10_W" x="-90" y="72"  type="priority"/>
+
+    <!-- TL_11 external stubs: east arm + south arm (T-junction, no north) -->
+    <node id="EXT_TL11_E" x="240" y="72"  type="priority"/>
+    <node id="EXT_TL11_S" x="150" y="162" type="priority"/>
+</nodes>

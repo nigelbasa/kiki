@@ -1,0 +1,30 @@
+{
+  "name": "rwendo-frontend",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev:admin": "node scripts/dev-server.mjs admin",
+    "dev:public": "node scripts/dev-server.mjs public",
+    "build:admin": "vite build --mode admin",
+    "build:public": "vite build --mode public",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.122.0",
+    "@react-three/fiber": "^8.18.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.3",
+    "recharts": "^2.13.0",
+    "socket.io-client": "^4.8.0",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.11",
+    "tailwindcss": "^3.4.14",
+    "vite": "^8.0.10"
+  }
+}

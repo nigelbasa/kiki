@@ -1,0 +1,19 @@
+{
+  "job_id": "default-library-video",
+  "status": "complete",
+  "progress": 1.0,
+  "frame_idx": 1443,
+  "total_frames": 1443,
+  "duration_sec": 48.1,
+  "counts": {
+    "car": 72,
+    "truck": 20,
+    "bus": 0,
+    "motorcycle": 0
+  },
+  "is_default": true,
+  "title": "Bundled annotated traffic demo",
+  "result_url": "/api/detection/default/video",
+  "source_name": "Traffic Intersection Security \u29f8 Surveillance Camera Footage [z8EwY3Slsws].mp4",
+  "output_name": "Traffic Intersection Security \u29f8 Surveillance Camera Footage [z8EwY3Slsws]_annotated.mp4"
+}

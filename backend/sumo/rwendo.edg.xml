@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Rwendo SUMO edges. One lane per direction on every corridor, 13.9 m/s
+  speed limit (~50 km/h). Naming: FROM__TO. Incoming edges end at the
+  junction; outgoing start at it.
+-->
+<edges>
+    <!-- TL_00 north arm -->
+    <edge id="EXT_TL00_N__TL_00" from="EXT_TL00_N" to="TL_00" numLanes="1" speed="13.9"/>
+    <edge id="TL_00__EXT_TL00_N" from="TL_00" to="EXT_TL00_N" numLanes="1" speed="13.9"/>
+
+    <!-- TL_00 west arm -->
+    <edge id="EXT_TL00_W__TL_00" from="EXT_TL00_W" to="TL_00" numLanes="1" speed="13.9"/>
+    <edge id="TL_00__EXT_TL00_W" from="TL_00" to="EXT_TL00_W" numLanes="1" speed="13.9"/>
+
+    <!-- TL_00 <-> TL_10 internal link (vertical corridor) -->
+    <edge id="TL_00__TL_10" from="TL_00" to="TL_10" numLanes="1" speed="13.9"/>
+    <edge id="TL_10__TL_00" from="TL_10" to="TL_00" numLanes="1" speed="13.9"/>
+
+    <!-- TL_00 <-> TL_11 internal link (Samora Machel diagonal via straight edge) -->
+    <edge id="TL_00__TL_11" from="TL_00" to="TL_11" numLanes="1" speed="13.9"/>
+    <edge id="TL_11__TL_00" from="TL_11" to="TL_00" numLanes="1" speed="13.9"/>
+
+    <!-- TL_10 south arm -->
+    <edge id="EXT_TL10_S__TL_10" from="EXT_TL10_S" to="TL_10" numLanes="1" speed="13.9"/>
+    <edge id="TL_10__EXT_TL10_S" from="TL_10" to="EXT_TL10_S" numLanes="1" speed="13.9"/>
+
+    <!-- TL_10 west arm -->
+    <edge id="EXT_TL10_W__TL_10" from="EXT_TL10_W" to="TL_10" numLanes="1" speed="13.9"/>
+    <edge id="TL_10__EXT_TL10_W" from="TL_10" to="EXT_TL10_W" numLanes="1" speed="13.9"/>
+
+    <!-- TL_10 <-> TL_11 internal link (horizontal corridor) -->
+    <edge id="TL_10__TL_11" from="TL_10" to="TL_11" numLanes="1" speed="13.9"/>
+    <edge id="TL_11__TL_10" from="TL_11" to="TL_10" numLanes="1" speed="13.9"/>
+
+    <!-- TL_11 east arm -->
+    <edge id="EXT_TL11_E__TL_11" from="EXT_TL11_E" to="TL_11" numLanes="1" speed="13.9"/>
+    <edge id="TL_11__EXT_TL11_E" from="TL_11" to="EXT_TL11_E" numLanes="1" speed="13.9"/>
+
+    <!-- TL_11 south arm -->
+    <edge id="EXT_TL11_S__TL_11" from="EXT_TL11_S" to="TL_11" numLanes="1" speed="13.9"/>
+    <edge id="TL_11__EXT_TL11_S" from="TL_11" to="EXT_TL11_S" numLanes="1" speed="13.9"/>
+</edges>

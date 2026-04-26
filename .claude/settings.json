@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'.'\\); import main; print\\('IMPORT OK'\\)\")",
+      "Bash(pip show *)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0,'.'\\); import main; print\\('IMPORT OK with ML deps'\\)\")",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, r'C:\\\\Program Files \\(x86\\)\\\\Eclipse\\\\Sumo\\\\tools'\\); import traci, sumolib; print\\('traci', traci.__file__\\); print\\('sumolib', sumolib.__file__\\)\")"
+    ]
+  }
+}

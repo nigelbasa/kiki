@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-bg: #ffffff;
+  --color-signal-green: #4ade80;
+  --color-signal-amber: #fb923c;
+  --color-signal-red: #f87171;
+  --color-congestion-clear: #86efac;
+  --color-congestion-moderate: #fde68a;
+  --color-congestion-heavy: #fca5a5;
+  --color-accent: #f97316;
+}
+
+body {
+  background: var(--color-bg);
+  font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+  margin: 0;
+}
+
+@keyframes rwendo-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.animate-rwendo-pulse { animation: rwendo-pulse 1s ease-in-out infinite; }
