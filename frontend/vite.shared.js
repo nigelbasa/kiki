@@ -24,7 +24,15 @@ export function createRwendoViteConfig(mode = 'public') {
       },
     },
     server: {
-      host: '127.0.0.1',
+      // Bind on the literal hostname `localhost` so the dev server banner
+      // prints `http://localhost:<port>/`. The API base in
+      // shared/api/client.js targets `http://localhost:8000`, and browser
+      // cookies are scoped per host — opening the dev server on
+      // `http://127.0.0.1:<port>/` causes the session cookie to be set on
+      // `localhost` but the page to be served from `127.0.0.1`, which some
+      // browsers treat as cross-host and silently drop the cookie on
+      // subsequent fetches, producing 401s on every guarded route.
+      host: 'localhost',
       port,
     },
   };
