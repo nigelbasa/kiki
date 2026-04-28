@@ -26,6 +26,11 @@ def _set_portal_cookie(response: Response, cookie_name: str, token: str) -> None
         httponly=True,
         samesite="lax",
         max_age=86400,
+        # Without path="/", the cookie defaults to the directory of the login
+        # URL (/api/auth/admin), and the browser will refuse to attach it on
+        # later calls to /api/analytics, /api/simulation, etc — every guarded
+        # route then 401s after a successful login.
+        path="/",
     )
 
 
@@ -89,13 +94,15 @@ async def logout(request: Request, response: Response) -> dict:
     cookie_name = ADMIN_COOKIE_NAME if portal == "admin" else PUBLIC_COOKIE_NAME if portal == "public" else ""
     token = request.cookies.get(cookie_name) if cookie_name else None
     store.logout(token)
+    # Match the path used when the cookie was set, otherwise the browser
+    # treats this as a different cookie and the original is left in place.
     if portal == "admin":
-      response.delete_cookie(ADMIN_COOKIE_NAME)
+        response.delete_cookie(ADMIN_COOKIE_NAME, path="/")
     elif portal == "public":
-      response.delete_cookie(PUBLIC_COOKIE_NAME)
+        response.delete_cookie(PUBLIC_COOKIE_NAME, path="/")
     else:
-      response.delete_cookie(ADMIN_COOKIE_NAME)
-      response.delete_cookie(PUBLIC_COOKIE_NAME)
+        response.delete_cookie(ADMIN_COOKIE_NAME, path="/")
+        response.delete_cookie(PUBLIC_COOKIE_NAME, path="/")
     return {"ok": True}
 
 
