@@ -154,6 +154,16 @@ function StatCard({ title, value, detail, accent = 'text-slate-900' }) {
   );
 }
 
+function formatElapsedTick(value) {
+  const seconds = Number(value || 0);
+  if (seconds >= 60) {
+    const minutes = Math.floor(seconds / 60);
+    const remainder = Math.round(seconds % 60);
+    return remainder === 0 ? `${minutes}m` : `${minutes}m${remainder}s`;
+  }
+  return `${Math.round(seconds)}s`;
+}
+
 function ComparisonChart({
   title,
   data,
@@ -163,6 +173,7 @@ function ComparisonChart({
   baselineKey,
   formatter,
   currentStroke = '#f97316',
+  domainMax,
 }) {
   return (
     <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
@@ -171,12 +182,22 @@ function ComparisonChart({
         <ResponsiveContainer>
           <LineChart data={data}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-            <XAxis dataKey="tick" tick={{ fontSize: 12 }} />
+            <XAxis
+              dataKey="elapsed"
+              type="number"
+              domain={[0, domainMax || 'dataMax']}
+              tickFormatter={formatElapsedTick}
+              tick={{ fontSize: 12 }}
+              label={{ value: 'Simulated time', position: 'insideBottom', offset: -2, fontSize: 11, fill: '#64748b' }}
+            />
             <YAxis tickFormatter={formatter} tick={{ fontSize: 12 }} />
-            <Tooltip formatter={(value) => formatter(value)} />
+            <Tooltip
+              labelFormatter={(value) => formatElapsedTick(value)}
+              formatter={(value) => formatter(value)}
+            />
             <Legend />
-            <Line type="monotone" dataKey={baselineKey} name={baselineLabel} stroke="#94a3b8" strokeWidth={2} dot={false} />
-            <Line type="monotone" dataKey={currentKey} name={currentLabel} stroke={currentStroke} strokeWidth={3} dot={false} />
+            <Line type="monotone" dataKey={baselineKey} name={baselineLabel} stroke="#94a3b8" strokeWidth={2} dot={false} connectNulls />
+            <Line type="monotone" dataKey={currentKey} name={currentLabel} stroke={currentStroke} strokeWidth={3} dot={false} connectNulls />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -438,11 +459,7 @@ export default function SimulationPage({ user, detection }) {
   const [toast, setToast] = useState('');
   const [junctionMetricsOpen, setJunctionMetricsOpen] = useState(false);
   const [selectedIntersectionId, setSelectedIntersectionId] = useState(null);
-  const [chartData, setChartData] = useState([]);
-  const [fixedBaseline, setFixedBaseline] = useState([]);
   const [health, setHealth] = useState({ backend: 'checking', detection: 'checking' });
-  const previousRunRef = useRef({ runId: '', mode: '' });
-  const chartDataRef = useRef([]);
   const demoTimersRef = useRef([]);
 
   useEffect(() => {
@@ -450,10 +467,6 @@ export default function SimulationPage({ user, detection }) {
     const timeout = window.setTimeout(() => setToast(''), 2200);
     return () => window.clearTimeout(timeout);
   }, [toast]);
-
-  useEffect(() => {
-    chartDataRef.current = chartData;
-  }, [chartData]);
 
   useEffect(() => {
     let cancelled = false;
@@ -494,59 +507,65 @@ export default function SimulationPage({ user, detection }) {
     setSelectedIntersectionId(state.intersections[0].id);
   }, [selectedIntersectionId, state]);
 
-  useEffect(() => {
-    if (!state) return;
-
-    if (previousRunRef.current.runId && previousRunRef.current.runId !== state.run_id) {
-      if (previousRunRef.current.mode === 'fixed' && chartDataRef.current.length > 0) {
-        setFixedBaseline(chartDataRef.current.map((entry, index) => ({ ...entry, tick: index + 1 })));
-      }
-      setChartData([]);
-      chartDataRef.current = [];
-    }
-
-    previousRunRef.current = { runId: state.run_id, mode: state.current_mode };
-
-    if (!state.started || state.tick <= 0) {
-      return;
-    }
-
-    setChartData((previous) => {
-      if (previous.some((entry) => entry.tick === state.tick)) {
-        return previous;
-      }
-      return [
-        ...previous,
-        {
-          tick: state.tick,
-          wait: state.current_avg_wait_time,
-          throughput: state.current_throughput_vpm,
-          congestion: state.current_avg_congestion,
-          greenWave: (state.green_wave_success_rate || 0) * 100,
-        },
-      ].slice(-240);
-    });
-  }, [state]);
-
   const networkMode = state?.current_mode || 'fixed';
   const currentLabel = networkMode === 'adaptive' ? 'Adaptive run' : 'Fixed run';
-  const overlayLabel = fixedBaseline.length > 0 && networkMode === 'adaptive' ? 'Fixed baseline' : 'Current run';
+  const baselineSeries = state?.baseline_timeseries || [];
+  const currentSeries = state?.current_timeseries || [];
+  const baselineAvailable = baselineSeries.length > 0;
+  const overlayLabel = baselineAvailable ? 'Fixed baseline' : 'No baseline yet';
   const runStatus = !state?.started ? 'READY' : state?.running ? 'LIVE' : 'PAUSED';
   const currentStroke = networkMode === 'adaptive' ? '#22c55e' : '#0f172a';
 
+  // Merge current + baseline samples on a shared `elapsed` (simulated seconds)
+  // axis. Each side may have different lengths; we union the timestamps so
+  // Recharts draws both lines on the same x-domain. `connectNulls` on the line
+  // takes care of holes when one side ends earlier than the other.
   const comparisonSeries = useMemo(() => {
-    return chartData.map((entry, index) => ({
-      tick: entry.tick,
-      currentWait: entry.wait,
-      currentThroughput: entry.throughput,
-      currentCongestion: entry.congestion,
-      currentGreenWave: entry.greenWave,
-      baselineWait: fixedBaseline[index]?.wait ?? null,
-      baselineThroughput: fixedBaseline[index]?.throughput ?? null,
-      baselineCongestion: fixedBaseline[index]?.congestion ?? null,
-      baselineGreenWave: fixedBaseline[index]?.greenWave ?? null,
-    }));
-  }, [chartData, fixedBaseline]);
+    const byElapsed = new Map();
+    const ensure = (elapsed) => {
+      const key = Number(elapsed).toFixed(1);
+      if (!byElapsed.has(key)) {
+        byElapsed.set(key, {
+          elapsed: Number(key),
+          currentWait: null,
+          currentThroughput: null,
+          currentCongestion: null,
+          currentGreenWave: null,
+          baselineWait: null,
+          baselineThroughput: null,
+          baselineCongestion: null,
+          baselineGreenWave: null,
+        });
+      }
+      return byElapsed.get(key);
+    };
+    for (const point of currentSeries) {
+      const row = ensure(point.elapsed_s);
+      row.currentWait = point.wait;
+      row.currentThroughput = point.throughput;
+      row.currentCongestion = point.congestion;
+      row.currentGreenWave = point.green_wave;
+    }
+    for (const point of baselineSeries) {
+      const row = ensure(point.elapsed_s);
+      row.baselineWait = point.wait;
+      row.baselineThroughput = point.throughput;
+      row.baselineCongestion = point.congestion;
+      row.baselineGreenWave = point.green_wave;
+    }
+    return Array.from(byElapsed.values()).sort((a, b) => a.elapsed - b.elapsed);
+  }, [currentSeries, baselineSeries]);
+
+  const chartDomainMax = useMemo(() => {
+    const candidates = [
+      state?.elapsed_seconds || 0,
+      state?.baseline_duration_s || 0,
+      currentSeries[currentSeries.length - 1]?.elapsed_s || 0,
+      baselineSeries[baselineSeries.length - 1]?.elapsed_s || 0,
+    ];
+    const max = Math.max(...candidates);
+    return max > 0 ? Math.ceil(max) : 'dataMax';
+  }, [state?.elapsed_seconds, state?.baseline_duration_s, currentSeries, baselineSeries]);
 
   const spillbackDetail = formatIntersectionList(state?.spillback_locations || [], state?.intersections || []);
   const summaryTone = formatSummaryTone(state?.network_summary);
@@ -554,8 +573,6 @@ export default function SimulationPage({ user, detection }) {
   function setNetworkMode(mode) {
     sendCommand('set_network_mode', { mode });
     setBoundaryKey((value) => value + 1);
-    setChartData([]);
-    chartDataRef.current = [];
     setToast(`Mode set to ${mode === 'adaptive' ? 'adaptive' : 'fixed time'}. Press Start Run to begin.`);
   }
 
@@ -569,8 +586,6 @@ export default function SimulationPage({ user, detection }) {
     demoTimersRef.current = [];
     sendCommand('reset');
     setBoundaryKey((value) => value + 1);
-    setChartData([]);
-    chartDataRef.current = [];
     setToast('Run reset. Press Start Run when you are ready.');
   }
 
@@ -779,7 +794,33 @@ export default function SimulationPage({ user, detection }) {
 
         <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">Live Junction Metrics</div>
+            <div className="flex flex-col gap-2">
+              <div className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">Live Junction Metrics</div>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                {baselineAvailable ? (
+                  <>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 font-semibold text-slate-700">
+                      Baseline: Run {state?.baseline_run_id || '—'}
+                    </span>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-600">
+                      {(state?.baseline_scenario || 'unknown').replace('_', ' ')}
+                    </span>
+                    <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-600">
+                      {state?.baseline_duration_s ? `${formatElapsedTick(state.baseline_duration_s)} long` : ''}
+                    </span>
+                    {state?.baseline_scenario && state?.scenario && state.baseline_scenario !== state.scenario && (
+                      <span className="rounded-full bg-amber-100 px-3 py-1 font-semibold text-amber-800">
+                        Scenario differs from current
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-500">
+                    Baseline appears after a fixed run finalises
+                  </span>
+                )}
+              </div>
+            </div>
             <button
               type="button"
               onClick={() => setJunctionMetricsOpen(true)}
@@ -800,6 +841,7 @@ export default function SimulationPage({ user, detection }) {
             baselineKey="baselineWait"
             formatter={(value) => formatSeconds(Number(value || 0))}
             currentStroke={currentStroke}
+            domainMax={chartDomainMax}
           />
           <ComparisonChart
             title="Throughput"
@@ -810,6 +852,7 @@ export default function SimulationPage({ user, detection }) {
             baselineKey="baselineThroughput"
             formatter={(value) => `${Number(value || 0).toFixed(1)}`}
             currentStroke={currentStroke}
+            domainMax={chartDomainMax}
           />
           <ComparisonChart
             title="Congestion"
@@ -820,6 +863,7 @@ export default function SimulationPage({ user, detection }) {
             baselineKey="baselineCongestion"
             formatter={(value) => `${Number(value || 0).toFixed(1)}`}
             currentStroke={currentStroke}
+            domainMax={chartDomainMax}
           />
           <ComparisonChart
             title="Green Wave"
@@ -830,6 +874,7 @@ export default function SimulationPage({ user, detection }) {
             baselineKey="baselineGreenWave"
             formatter={(value) => `${Number(value || 0).toFixed(1)}%`}
             currentStroke={currentStroke}
+            domainMax={chartDomainMax}
           />
         </div>
       </div>

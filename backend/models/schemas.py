@@ -60,6 +60,17 @@ class JunctionComparisonState(BaseModel):
     spillback_events: int = 0
 
 
+class TimeseriesPoint(BaseModel):
+    """One sample of the live chart series. `elapsed_s` is wall-clock-equivalent
+    simulated seconds since the run started, so charts can be aligned across
+    runs of different durations."""
+    elapsed_s: float
+    wait: float
+    throughput: float
+    congestion: float
+    green_wave: float
+
+
 class VisualVehicleState(BaseModel):
     """Vehicle render state. SUMO backend drives `x, z, heading` directly.
 
@@ -121,6 +132,13 @@ class SimulationTickState(BaseModel):
     baseline_throughput_vpm: Optional[float] = None
     baseline_avg_congestion: Optional[float] = None
     baseline_green_wave_success_rate: Optional[float] = None
+    baseline_run_id: Optional[str] = None
+    baseline_scenario: Optional[str] = None
+    baseline_captured_at: Optional[str] = None
+    baseline_duration_s: Optional[float] = None
+    elapsed_seconds: float = 0.0
+    current_timeseries: list[TimeseriesPoint] = []
+    baseline_timeseries: list[TimeseriesPoint] = []
 
 
 class SimulationControlCommand(BaseModel):

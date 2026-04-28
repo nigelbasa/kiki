@@ -255,6 +255,12 @@ class SumoNetwork:
         self._prev_vehicle_edges: dict[str, str] = {}
         self._connected = False
         self._cmd_q: queue.Queue[Callable[[], None]] = queue.Queue()
+        # Smoothed per-edge demand for adaptive green sizing. Raw presence/halt
+        # counts flicker between integer values tick-to-tick; the EMA gives a
+        # stable signal so green durations don't oscillate. Selection logic
+        # still uses the raw score so it can react quickly when a new platoon
+        # arrives — only sizing is smoothed.
+        self._edge_demand_ema: dict[str, float] = {}
 
         atexit.register(self._disconnect)
 
@@ -282,6 +288,7 @@ class SumoNetwork:
         self._vehicle_counter = 0
         self._vehicle_spawn_ticks.clear()
         self._prev_vehicle_edges.clear()
+        self._edge_demand_ema.clear()
         for ctl in self.intersections.values():
             ctl.spillback_active = False
             ctl.emergency_state = EmergencyState.IDLE
@@ -578,7 +585,10 @@ class SumoNetwork:
             return
 
         plan = PHASE_PLAN_MAP[ctl.id][ctl.current_plan_id]
-        min_green = max(10.0, float(cfg.get("MIN_GREEN")))
+        # Honour the operator-configured MIN_GREEN exactly — sizing and the
+        # truncation guard must agree, otherwise a config of e.g. 6s would
+        # be silently overridden here.
+        min_green = float(cfg.get("MIN_GREEN"))
         if ctl.stage_elapsed < min_green:
             return
 
@@ -690,10 +700,7 @@ class SumoNetwork:
             return round((min_green + max_green) / 2.0, 2)
 
         plan = PHASE_PLAN_MAP[ctl.id][plan_id]
-        demand = sum(
-            float(self._edge_presence(edge_id)) + float(self._edge_halts(edge_id)) * 0.85
-            for edge_id in plan.queue_edges
-        )
+        demand = sum(self._edge_sizing_demand(edge_id) for edge_id in plan.queue_edges)
         duration = min_green + min(demand * 0.9, max_green - min_green)
 
         coordination_bonus = 0.0
@@ -911,6 +918,22 @@ class SumoNetwork:
 
     def _edge_detection_score(self, edge_id: str) -> float:
         return float(self._edge_presence(edge_id)) + float(self._edge_halts(edge_id)) * 1.8
+
+    def _edge_sizing_demand(self, edge_id: str) -> float:
+        """Smoothed demand for green-duration sizing.
+
+        Uses the same `presence + halts*0.85` mix as the previous raw call but
+        runs it through an exponential moving average so a single noisy frame
+        cannot expand or shrink the green by several seconds. Alpha is small
+        enough to filter tick-level jitter while still tracking real arrivals
+        within ~3 seconds.
+        """
+        instant = float(self._edge_presence(edge_id)) + float(self._edge_halts(edge_id)) * 0.85
+        alpha = 0.35
+        previous = self._edge_demand_ema.get(edge_id, instant)
+        smoothed = previous + alpha * (instant - previous)
+        self._edge_demand_ema[edge_id] = smoothed
+        return smoothed
 
     @staticmethod
     def _segment_vehicle_count(edge_id: str) -> int:
@@ -1186,6 +1209,9 @@ class SumoMetricsAccumulator:
         self._recent_congestion_scores: deque[float] = deque()
         self._recent_green_wave_outcomes: deque[int] = deque(maxlen=180)
         self._active_vehicle_traces: dict[str, VehicleJunctionTrace] = {}
+        # Sampled chart-relevant series so frontend overlays can be aligned by
+        # elapsed simulated seconds rather than tick count.
+        self._timeseries: list[dict[str, float]] = []
         self.junction_samples: dict[str, dict[str, float]] = {
             intersection_id: {
                 "ns_queue_total": 0.0,
@@ -1248,6 +1274,29 @@ class SumoMetricsAccumulator:
             sample["max_queue"] = max(sample["max_queue"], snapshot["ns_queue"] + snapshot["ew_queue"])
 
         self.tick_count += 1
+
+        # Sample the chart series ~once per simulated second so the timeseries
+        # is bounded regardless of tick rate. _step_length() is the seconds per
+        # tick.
+        sample_every = max(1, int(round(1.0 / max(_step_length(), 1e-3))))
+        if self.tick_count % sample_every == 0:
+            elapsed_s = round(self.tick_count * _step_length(), 2)
+            self._timeseries.append({
+                "elapsed_s": elapsed_s,
+                "wait": float(self.avg_wait_time()),
+                "throughput": float(self.current_throughput_per_min()),
+                "congestion": float(self.current_congestion()),
+                "green_wave": float(round(self.current_success_rate() * 100.0, 2)),
+            })
+            # Cap to ~30 minutes of samples to bound memory.
+            if len(self._timeseries) > 1800:
+                self._timeseries = self._timeseries[-1800:]
+
+    def timeseries(self) -> list[dict[str, float]]:
+        return list(self._timeseries)
+
+    def current_elapsed_seconds(self) -> float:
+        return round(self.tick_count * _step_length(), 2)
 
     def _update_vehicle_wait_traces(self, meta: dict) -> None:
         active_vehicle_states = meta.get("vehicle_states", {}) or {}
@@ -1364,7 +1413,12 @@ class SumoMetricsAccumulator:
             for approach in intersection.approaches
         )
         segment_load = sum(segment.vehicles_in_transit for segment in state.segments)
-        return round((queue_load * 1.25 + segment_load * 0.7) / max(len(state.intersections) * 2, 1), 2)
+        approach_count = sum(len(intersection.approaches) for intersection in state.intersections)
+        segment_count = max(len(state.segments), 1)
+        # Normalize each load by its own population so the score is a per-unit
+        # density, not a sum-of-averages over an arbitrary divisor.
+        normalized = (queue_load * 1.25) / max(approach_count, 1) + (segment_load * 0.7) / segment_count
+        return round(normalized, 2)
 
     def _record_green_wave(self, network: SumoNetwork) -> None:
         checks: list[tuple[bool, bool]] = []
@@ -1464,6 +1518,7 @@ class SumoMetricsAccumulator:
         self._recent_congestion_scores.clear()
         self._recent_green_wave_outcomes.clear()
         self._active_vehicle_traces.clear()
+        self._timeseries = []
         self.junction_samples = {
             intersection_id: {
                 "ns_queue_total": 0.0,

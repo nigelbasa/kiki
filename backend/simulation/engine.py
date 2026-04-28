@@ -12,7 +12,7 @@ from typing import Awaitable, Callable, Optional
 
 import config_runtime as cfg
 import db
-from models.schemas import JunctionComparisonState, JunctionMetricState, RunSummary, SignalMode, SimulationTickState
+from models.schemas import JunctionComparisonState, JunctionMetricState, RunSummary, SignalMode, SimulationTickState, TimeseriesPoint
 from simulation.sumo_network import SumoMetricsAccumulator, SumoNetwork
 from simulation.vehicles import VehicleGenerator
 
@@ -49,6 +49,14 @@ class SimulationEngine:
         self._last_state: Optional[SimulationTickState] = None
         self._last_fixed_summary: Optional[RunSummary] = None
         self._current_run_seed: Optional[int] = None
+        # Baseline series + provenance from the most recent *fixed* run that
+        # produced at least one chart sample. Snapshotted on run finalize so
+        # the comparison overlay is stable for the entire next adaptive run.
+        self._baseline_timeseries: list[dict[str, float]] = []
+        self._baseline_run_id: Optional[str] = None
+        self._baseline_scenario: Optional[str] = None
+        self._baseline_captured_at: Optional[str] = None
+        self._baseline_duration_s: Optional[float] = None
 
     def _queue_network_command(self, fn) -> None:
         if hasattr(self.network, "queue_command"):
@@ -73,6 +81,13 @@ class SimulationEngine:
             self.run_history = self.run_history[-retention:]
         if summary.mode == SignalMode.FIXED:
             self._last_fixed_summary = summary
+            series = self._metrics.timeseries()
+            if series:
+                self._baseline_timeseries = series
+                self._baseline_run_id = summary.run_id
+                self._baseline_scenario = summary.scenario
+                self._baseline_captured_at = _now_iso()
+                self._baseline_duration_s = self._metrics.current_elapsed_seconds()
 
         self._persist_run_summary(summary, ended_at=_now_iso())
 
@@ -140,6 +155,19 @@ class SimulationEngine:
         if congestion_value >= 4:
             return "Moderate traffic"
         return "Clear roads"
+
+    @staticmethod
+    def _to_timeseries_points(series: list[dict[str, float]]) -> list[TimeseriesPoint]:
+        return [
+            TimeseriesPoint(
+                elapsed_s=float(point.get("elapsed_s", 0.0)),
+                wait=float(point.get("wait", 0.0)),
+                throughput=float(point.get("throughput", 0.0)),
+                congestion=float(point.get("congestion", 0.0)),
+                green_wave=float(point.get("green_wave", 0.0)),
+            )
+            for point in series
+        ]
 
     @staticmethod
     def _junction_comparison_map(source: Optional[dict[str, dict[str, float]]]) -> dict[str, JunctionComparisonState]:
@@ -358,6 +386,13 @@ class SimulationEngine:
                     "baseline_throughput_vpm": self._last_fixed_summary.throughput_per_min if self._last_fixed_summary else None,
                     "baseline_avg_congestion": self._last_fixed_summary.avg_congestion if self._last_fixed_summary else None,
                     "baseline_green_wave_success_rate": self._last_fixed_summary.green_wave_success_rate if self._last_fixed_summary else None,
+                    "baseline_run_id": self._baseline_run_id,
+                    "baseline_scenario": self._baseline_scenario,
+                    "baseline_captured_at": self._baseline_captured_at,
+                    "baseline_duration_s": self._baseline_duration_s,
+                    "elapsed_seconds": self._metrics.current_elapsed_seconds(),
+                    "current_timeseries": self._to_timeseries_points(self._metrics.timeseries()),
+                    "baseline_timeseries": self._to_timeseries_points(self._baseline_timeseries),
                 }
             )
         return SimulationTickState(
@@ -398,6 +433,13 @@ class SimulationEngine:
             baseline_throughput_vpm=self._last_fixed_summary.throughput_per_min if self._last_fixed_summary else None,
             baseline_avg_congestion=self._last_fixed_summary.avg_congestion if self._last_fixed_summary else None,
             baseline_green_wave_success_rate=self._last_fixed_summary.green_wave_success_rate if self._last_fixed_summary else None,
+            baseline_run_id=self._baseline_run_id,
+            baseline_scenario=self._baseline_scenario,
+            baseline_captured_at=self._baseline_captured_at,
+            baseline_duration_s=self._baseline_duration_s,
+            elapsed_seconds=0.0,
+            current_timeseries=[],
+            baseline_timeseries=self._to_timeseries_points(self._baseline_timeseries),
         )
 
     # -------------------------------------------------------------------- loop
@@ -446,6 +488,13 @@ class SimulationEngine:
                         state.baseline_throughput_vpm = self._last_fixed_summary.throughput_per_min
                         state.baseline_avg_congestion = self._last_fixed_summary.avg_congestion
                         state.baseline_green_wave_success_rate = self._last_fixed_summary.green_wave_success_rate
+                    state.baseline_run_id = self._baseline_run_id
+                    state.baseline_scenario = self._baseline_scenario
+                    state.baseline_captured_at = self._baseline_captured_at
+                    state.baseline_duration_s = self._baseline_duration_s
+                    state.elapsed_seconds = self._metrics.current_elapsed_seconds()
+                    state.current_timeseries = self._to_timeseries_points(self._metrics.timeseries())
+                    state.baseline_timeseries = self._to_timeseries_points(self._baseline_timeseries)
                     self.tick_count = state.tick
                     self._last_state = state
 
