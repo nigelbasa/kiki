@@ -5,7 +5,7 @@ import ProfilePage from './pages/ProfilePage.jsx';
 import { useAuth } from '@shared/hooks/useAuth';
 
 export default function App() {
-  const { user, login, signup, logout, loading, saveProfile } = useAuth();
+  const { user, login, signup, logout, loading, saveProfile } = useAuth('public');
   const [view, setView] = useState('map');
 
   useEffect(() => {

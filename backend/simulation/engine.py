@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import threading
 import time
 import uuid
@@ -11,7 +12,7 @@ from typing import Awaitable, Callable, Optional
 
 import config_runtime as cfg
 import db
-from models.schemas import JunctionMetricState, RunSummary, SignalMode, SimulationTickState
+from models.schemas import JunctionComparisonState, JunctionMetricState, RunSummary, SignalMode, SimulationTickState
 from simulation.sumo_network import SumoMetricsAccumulator, SumoNetwork
 from simulation.vehicles import VehicleGenerator
 
@@ -47,6 +48,7 @@ class SimulationEngine:
         self._stop_flag: threading.Event = threading.Event()
         self._last_state: Optional[SimulationTickState] = None
         self._last_fixed_summary: Optional[RunSummary] = None
+        self._current_run_seed: Optional[int] = None
 
     def _queue_network_command(self, fn) -> None:
         if hasattr(self.network, "queue_command"):
@@ -63,6 +65,7 @@ class SimulationEngine:
             started_at=self._run_start,
             scenario=self.scenario,
             mode=self.network.current_mode(),
+            run_seed=self._current_run_seed,
         )
         self.run_history.append(summary)
         retention = cfg.get("RUNS_RETENTION")
@@ -97,6 +100,7 @@ class SimulationEngine:
                 "preemption_events": summary.preemption_events,
                 "green_wave_success_rate": summary.green_wave_success_rate,
                 "junction_metrics": summary.junction_metrics,
+                "run_seed": summary.run_seed,
             })
         except Exception:
             pass
@@ -109,7 +113,45 @@ class SimulationEngine:
             started_at=self._run_start,
             scenario=self.scenario,
             mode=self.network.current_mode(),
+            run_seed=self._current_run_seed,
         )
+
+    def _next_run_seed(self, reuse_fixed_seed: bool = False) -> int:
+        if reuse_fixed_seed and self._last_fixed_summary and self._last_fixed_summary.run_seed is not None:
+            return int(self._last_fixed_summary.run_seed)
+        return random.SystemRandom().randint(1, 2_147_483_647)
+
+    def _prepare_run_seed(self, reuse_fixed_seed: bool = False) -> None:
+        self._current_run_seed = self._next_run_seed(reuse_fixed_seed=reuse_fixed_seed)
+        self.network.set_run_seed(self._current_run_seed)
+
+    @staticmethod
+    def _spillback_locations(state: SimulationTickState) -> list[str]:
+        return [
+            intersection.id
+            for intersection in state.intersections
+            if intersection.spillback_active
+        ]
+
+    @staticmethod
+    def _network_summary(state: SimulationTickState, congestion_value: float) -> str:
+        if any(intersection.spillback_active for intersection in state.intersections) or congestion_value >= 10:
+            return "Heavy congestion"
+        if congestion_value >= 4:
+            return "Moderate traffic"
+        return "Clear roads"
+
+    @staticmethod
+    def _junction_comparison_map(source: Optional[dict[str, dict[str, float]]]) -> dict[str, JunctionComparisonState]:
+        result: dict[str, JunctionComparisonState] = {}
+        for intersection_id, metrics in (source or {}).items():
+            result[intersection_id] = JunctionComparisonState(
+                avg_wait_time=float(metrics.get("avg_wait_time", 0.0)),
+                vehicle_count=int(metrics.get("vehicle_count", 0)),
+                throughput_vpm=float(metrics.get("throughput_vpm", 0.0)),
+                spillback_events=int(metrics.get("spillback_events", 0)),
+            )
+        return result
 
     # ----------------------------------------------------------------- control
     def start(self, broadcast_fn: BroadcastFn, loop: asyncio.AbstractEventLoop) -> None:
@@ -137,6 +179,13 @@ class SimulationEngine:
         self._queue_network_command(self.network.pause)
 
     def start_run(self) -> None:
+        if not self.network.started and self.tick_count == 0:
+            reuse_fixed_seed = (
+                self.network.current_mode() == SignalMode.ADAPTIVE and
+                self._last_fixed_summary is not None and
+                self._last_fixed_summary.scenario == self.scenario
+            )
+            self._prepare_run_seed(reuse_fixed_seed=reuse_fixed_seed)
         self.running = True
         self.network.running = True
         self.network.started = True
@@ -157,6 +206,7 @@ class SimulationEngine:
         self.tick_count = 0
         self._run_id = uuid.uuid4().hex[:8]
         self._run_start = _now_iso()
+        self._current_run_seed = None
         self._last_state = None
         self._queue_network_command(self.network.reset)
 
@@ -176,6 +226,7 @@ class SimulationEngine:
         self.tick_count = 0
         self._run_id = uuid.uuid4().hex[:8]
         self._run_start = _now_iso()
+        self._current_run_seed = None
         self._last_state = None
         for controller in self.network.intersections.values():
             controller.set_mode(mode)
@@ -293,6 +344,12 @@ class SimulationEngine:
                     "preemption_events": self._metrics.preemption_events,
                     "current_mode": self.network.current_mode(),
                     "junction_metrics": junction_metrics,
+                    "current_junction_comparison": self._junction_comparison_map(self._metrics.junction_metrics()),
+                    "baseline_junction_comparison": self._junction_comparison_map(
+                        self._last_fixed_summary.junction_metrics if self._last_fixed_summary else None
+                    ),
+                    "spillback_locations": self._spillback_locations(self._last_state),
+                    "network_summary": self._network_summary(self._last_state, self._metrics.current_congestion()),
                     "baseline_mode": self._last_fixed_summary.mode if self._last_fixed_summary else None,
                     "baseline_avg_wait_time": self._last_fixed_summary.avg_wait_time_fixed if self._last_fixed_summary else None,
                     "baseline_total_wait_time": self._last_fixed_summary.total_wait_seconds if self._last_fixed_summary else None,
@@ -327,6 +384,12 @@ class SimulationEngine:
             current_avg_congestion=0.0,
             spillback_events=0,
             preemption_events=0,
+            current_junction_comparison={},
+            baseline_junction_comparison=self._junction_comparison_map(
+                self._last_fixed_summary.junction_metrics if self._last_fixed_summary else None
+            ),
+            spillback_locations=[],
+            network_summary="Clear roads",
             baseline_mode=self._last_fixed_summary.mode if self._last_fixed_summary else None,
             baseline_avg_wait_time=self._last_fixed_summary.avg_wait_time_fixed if self._last_fixed_summary else None,
             baseline_total_wait_time=self._last_fixed_summary.total_wait_seconds if self._last_fixed_summary else None,
@@ -368,6 +431,12 @@ class SimulationEngine:
                     state.current_avg_congestion = self._metrics.current_congestion()
                     state.spillback_events = self._metrics.spillback_events
                     state.preemption_events = self._metrics.preemption_events
+                    state.current_junction_comparison = self._junction_comparison_map(self._metrics.junction_metrics())
+                    state.baseline_junction_comparison = self._junction_comparison_map(
+                        self._last_fixed_summary.junction_metrics if self._last_fixed_summary else None
+                    )
+                    state.spillback_locations = self._spillback_locations(state)
+                    state.network_summary = self._network_summary(state, state.current_avg_congestion)
                     if self._last_fixed_summary is not None:
                         state.baseline_mode = self._last_fixed_summary.mode
                         state.baseline_avg_wait_time = self._last_fixed_summary.avg_wait_time_fixed

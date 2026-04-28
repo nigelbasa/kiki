@@ -46,6 +46,8 @@ def init_db() -> None:
         conn.execute("ALTER TABLE simulation_runs ADD COLUMN emergency_vehicles_completed INTEGER DEFAULT 0")
     if "avg_emergency_travel_time" not in columns:
         conn.execute("ALTER TABLE simulation_runs ADD COLUMN avg_emergency_travel_time REAL DEFAULT 0")
+    if "run_seed" not in columns:
+        conn.execute("ALTER TABLE simulation_runs ADD COLUMN run_seed INTEGER")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS tick_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,6 +66,16 @@ def init_db() -> None:
             timestamp TEXT,
             message TEXT,
             level TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS analytics_reports (
+            report_id TEXT PRIMARY KEY,
+            generated_at TEXT,
+            period_label TEXT,
+            period_start TEXT,
+            period_end TEXT,
+            payload_json TEXT
         )
     """)
     conn.execute("""
@@ -98,8 +110,8 @@ def save_run(run: dict) -> None:
          avg_wait_time, total_wait_seconds, throughput_per_min, avg_congestion,
          vehicles_completed, emergency_vehicles_completed, avg_emergency_travel_time,
          spillback_events, preemption_events, green_wave_success_rate,
-         ran_at, junction_metrics_json)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+         ran_at, junction_metrics_json, run_seed)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             run["run_id"], run["started_at"], run.get("ended_at", ""),
             run["scenario"], run["mode"], run["duration_ticks"],
@@ -109,6 +121,7 @@ def save_run(run: dict) -> None:
             run["spillback_events"], run["preemption_events"],
             run["green_wave_success_rate"], run.get("ran_at", ""),
             json.dumps(run.get("junction_metrics") or {}),
+            run.get("run_seed"),
         ),
     )
     conn.commit()
@@ -274,6 +287,58 @@ def clear_detection_state() -> None:
     conn.execute("DELETE FROM simulation_runs")
     conn.commit()
     conn.close()
+
+
+def save_report(report: dict) -> None:
+    conn = get_connection()
+    conn.execute(
+        """INSERT OR REPLACE INTO analytics_reports
+        (report_id, generated_at, period_label, period_start, period_end, payload_json)
+        VALUES (?,?,?,?,?,?)""",
+        (
+            report["report_id"],
+            report["generated_at"],
+            report["period"]["label"],
+            report["period"]["start"],
+            report["period"]["end"],
+            json.dumps(report),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_all_reports() -> list[dict]:
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT payload_json FROM analytics_reports ORDER BY generated_at DESC"
+    ).fetchall()
+    conn.close()
+    reports: list[dict] = []
+    for row in rows:
+        payload = row["payload_json"]
+        if not payload:
+            continue
+        try:
+            reports.append(json.loads(payload))
+        except json.JSONDecodeError:
+            continue
+    return reports
+
+
+def get_report(report_id: str) -> Optional[dict]:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT payload_json FROM analytics_reports WHERE report_id = ?",
+        (report_id,),
+    ).fetchone()
+    conn.close()
+    if not row or not row["payload_json"]:
+        return None
+    try:
+        return json.loads(row["payload_json"])
+    except json.JSONDecodeError:
+        return None
 
 
 def _decode_run_row(row: dict) -> dict:

@@ -40,6 +40,23 @@ function formatPhaseLabel(value) {
   return String(value || 'red').replace(/^./, (char) => char.toUpperCase());
 }
 
+function formatIntersectionList(ids = [], intersections = []) {
+  if (!ids.length) return 'No active spillback';
+  return ids
+    .map((id) => {
+      const match = intersections.find((intersection) => intersection.id === id);
+      return formatIntersectionName(id, match?.name);
+    })
+    .join(' | ');
+}
+
+function formatSummaryTone(summary) {
+  const normalized = String(summary || '').toLowerCase();
+  if (normalized.includes('heavy')) return 'text-rose-700';
+  if (normalized.includes('moderate')) return 'text-amber-700';
+  return 'text-emerald-700';
+}
+
 function liveApproachCount(approach, presence = 0) {
   return Math.max(Number(approach?.queue_length || 0), Math.round(Number(presence || 0)));
 }
@@ -171,6 +188,9 @@ function JunctionMetricsModal({
   open,
   intersections,
   junctionMetrics,
+  currentComparison,
+  baselineComparison,
+  currentMode,
   selectedIntersectionId,
   onSelect,
   onClose,
@@ -180,6 +200,8 @@ function JunctionMetricsModal({
   const selectedIntersection =
     intersections.find((intersection) => intersection.id === selectedIntersectionId) || intersections[0] || null;
   const selectedMetrics = selectedIntersection ? junctionMetrics?.[selectedIntersection.id] : null;
+  const selectedCurrentComparison = selectedIntersection ? currentComparison?.[selectedIntersection.id] : null;
+  const selectedBaselineComparison = selectedIntersection ? baselineComparison?.[selectedIntersection.id] : null;
   const selectedTotalQueue = selectedIntersection
     ? selectedIntersection.approaches.reduce((sum, approach) => {
         const isNorthSouth = approach.direction === 'NS';
@@ -291,6 +313,68 @@ function JunctionMetricsModal({
                     detail={`Emergency state: ${selectedIntersection.emergency_state}`}
                     accent="text-rwendo-accent"
                   />
+                </div>
+
+                <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                        Junction Comparison
+                      </div>
+                      <div className="mt-1 text-sm text-slate-500">
+                        Run fixed first to store a baseline, then switch to adaptive to compare the same junction.
+                      </div>
+                    </div>
+                    <div className="text-sm font-semibold text-slate-600">
+                      {currentMode === 'adaptive' && selectedBaselineComparison ? 'Fixed vs adaptive' : 'Current run only'}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-slate-200 text-left text-slate-500">
+                          <th className="pb-3 pr-4 font-semibold">Metric</th>
+                          <th className="pb-3 pr-4 font-semibold">Fixed Baseline</th>
+                          <th className="pb-3 font-semibold">
+                            {currentMode === 'adaptive' ? 'Adaptive Run' : 'Current Run'}
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="text-slate-700">
+                        <tr className="border-b border-slate-100">
+                          <td className="py-3 pr-4 font-semibold">Average wait</td>
+                          <td className="py-3 pr-4">
+                            {selectedBaselineComparison ? `${Number(selectedBaselineComparison.avg_wait_time || 0).toFixed(1)}s` : 'Not stored yet'}
+                          </td>
+                          <td className="py-3">
+                            {`${Number(selectedCurrentComparison?.avg_wait_time || 0).toFixed(1)}s`}
+                          </td>
+                        </tr>
+                        <tr className="border-b border-slate-100">
+                          <td className="py-3 pr-4 font-semibold">Vehicle count</td>
+                          <td className="py-3 pr-4">
+                            {selectedBaselineComparison ? Number(selectedBaselineComparison.vehicle_count || 0).toFixed(0) : 'Not stored yet'}
+                          </td>
+                          <td className="py-3">{Number(selectedCurrentComparison?.vehicle_count || 0).toFixed(0)}</td>
+                        </tr>
+                        <tr className="border-b border-slate-100">
+                          <td className="py-3 pr-4 font-semibold">Throughput</td>
+                          <td className="py-3 pr-4">
+                            {selectedBaselineComparison ? `${Number(selectedBaselineComparison.throughput_vpm || 0).toFixed(1)} veh/min` : 'Not stored yet'}
+                          </td>
+                          <td className="py-3">{`${Number(selectedCurrentComparison?.throughput_vpm || 0).toFixed(1)} veh/min`}</td>
+                        </tr>
+                        <tr>
+                          <td className="py-3 pr-4 font-semibold">Congestion (spillback)</td>
+                          <td className="py-3 pr-4">
+                            {selectedBaselineComparison ? `${Number(selectedBaselineComparison.spillback_events || 0).toFixed(0)} events` : 'Not stored yet'}
+                          </td>
+                          <td className="py-3">{`${Number(selectedCurrentComparison?.spillback_events || 0).toFixed(0)} events`}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
 
                 <div className="grid gap-4 xl:grid-cols-2">
@@ -463,6 +547,9 @@ export default function SimulationPage({ user, detection }) {
       baselineGreenWave: fixedBaseline[index]?.greenWave ?? null,
     }));
   }, [chartData, fixedBaseline]);
+
+  const spillbackDetail = formatIntersectionList(state?.spillback_locations || [], state?.intersections || []);
+  const summaryTone = formatSummaryTone(state?.network_summary);
 
   function setNetworkMode(mode) {
     sendCommand('set_network_mode', { mode });
@@ -656,7 +743,7 @@ export default function SimulationPage({ user, detection }) {
           </div>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-4">
+        <div className="grid gap-4 lg:grid-cols-5">
           <StatCard
             title="Current Wait"
             value={formatSeconds(state?.current_avg_wait_time || 0)}
@@ -671,7 +758,7 @@ export default function SimulationPage({ user, detection }) {
           <StatCard
             title="Congestion"
             value={(state?.current_avg_congestion || 0).toFixed(1)}
-            detail={`Spillbacks: ${state?.spillback_events || 0}`}
+            detail={`Spillbacks: ${state?.spillback_events || 0} | ${spillbackDetail}`}
           />
           <StatCard
             title="Green Wave"
@@ -681,6 +768,12 @@ export default function SimulationPage({ user, detection }) {
                 ? `Fixed baseline: ${(state.baseline_green_wave_success_rate * 100).toFixed(1)}%`
                 : 'Baseline appears after a fixed run'
             }
+          />
+          <StatCard
+            title="Summary"
+            value={state?.network_summary || 'Clear roads'}
+            detail={spillbackDetail}
+            accent={summaryTone}
           />
         </div>
 
@@ -751,6 +844,9 @@ export default function SimulationPage({ user, detection }) {
         open={junctionMetricsOpen}
         intersections={state?.intersections || []}
         junctionMetrics={state?.junction_metrics || {}}
+        currentComparison={state?.current_junction_comparison || {}}
+        baselineComparison={state?.baseline_junction_comparison || {}}
+        currentMode={networkMode}
         selectedIntersectionId={selectedIntersectionId}
         onSelect={setSelectedIntersectionId}
         onClose={() => setJunctionMetricsOpen(false)}

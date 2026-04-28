@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from auth import store
-from auth.middleware import COOKIE_NAME, get_current_user
+from auth.middleware import ADMIN_COOKIE_NAME, PUBLIC_COOKIE_NAME, get_current_user
 from auth.store import User
 from models.schemas import (
     LoginRequest,
@@ -19,28 +19,50 @@ from models.schemas import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/login", response_model=LoginResponse)
-async def login(body: LoginRequest, response: Response) -> LoginResponse:
+def _set_portal_cookie(response: Response, cookie_name: str, token: str) -> None:
+    response.set_cookie(
+        key=cookie_name,
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=86400,
+    )
+
+
+@router.post("/admin/login", response_model=LoginResponse)
+async def admin_login(body: LoginRequest, response: Response) -> LoginResponse:
     token = store.authenticate(body.username, body.password)
     if token is None:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     user = store.get_user(body.username)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=token,
-        httponly=True,
-        samesite="lax",
-        max_age=86400,
-    )
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin accounts only")
+    _set_portal_cookie(response, ADMIN_COOKIE_NAME, token)
     return LoginResponse(
         username=user.username, display_name=user.display_name, role=user.role
     )
 
 
-@router.post("/signup", response_model=LoginResponse)
-async def signup(body: SignupRequest, response: Response) -> LoginResponse:
+@router.post("/public/login", response_model=LoginResponse)
+async def public_login(body: LoginRequest, response: Response) -> LoginResponse:
+    token = store.authenticate(body.username, body.password)
+    if token is None:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    user = store.get_user(body.username)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.role != "public":
+        raise HTTPException(status_code=403, detail="Public accounts only")
+    _set_portal_cookie(response, PUBLIC_COOKIE_NAME, token)
+    return LoginResponse(
+        username=user.username, display_name=user.display_name, role=user.role
+    )
+
+
+@router.post("/public/signup", response_model=LoginResponse)
+async def public_signup(body: SignupRequest, response: Response) -> LoginResponse:
     username = body.username.strip()
     display_name = body.display_name.strip()
     if store.get_user(username) is not None:
@@ -57,21 +79,23 @@ async def signup(body: SignupRequest, response: Response) -> LoginResponse:
     if token is None:
         raise HTTPException(status_code=500, detail="Could not create session")
 
-    response.set_cookie(
-        key=COOKIE_NAME,
-        value=token,
-        httponly=True,
-        samesite="lax",
-        max_age=86400,
-    )
+    _set_portal_cookie(response, PUBLIC_COOKIE_NAME, token)
     return LoginResponse(username=user.username, display_name=user.display_name, role=user.role)
 
 
 @router.post("/logout")
 async def logout(request: Request, response: Response) -> dict:
-    token = request.cookies.get(COOKIE_NAME)
+    portal = (request.headers.get("x-rwendo-portal") or request.query_params.get("portal") or "").strip().lower()
+    cookie_name = ADMIN_COOKIE_NAME if portal == "admin" else PUBLIC_COOKIE_NAME if portal == "public" else ""
+    token = request.cookies.get(cookie_name) if cookie_name else None
     store.logout(token)
-    response.delete_cookie(COOKIE_NAME)
+    if portal == "admin":
+      response.delete_cookie(ADMIN_COOKIE_NAME)
+    elif portal == "public":
+      response.delete_cookie(PUBLIC_COOKIE_NAME)
+    else:
+      response.delete_cookie(ADMIN_COOKIE_NAME)
+      response.delete_cookie(PUBLIC_COOKIE_NAME)
     return {"ok": True}
 
 

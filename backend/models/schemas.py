@@ -53,6 +53,13 @@ class JunctionMetricState(BaseModel):
     ew_presence: float
 
 
+class JunctionComparisonState(BaseModel):
+    avg_wait_time: float = 0.0
+    vehicle_count: int = 0
+    throughput_vpm: float = 0.0
+    spillback_events: int = 0
+
+
 class VisualVehicleState(BaseModel):
     """Vehicle render state. SUMO backend drives `x, z, heading` directly.
 
@@ -88,8 +95,12 @@ class SimulationTickState(BaseModel):
     intersections: list[IntersectionState]
     segments: list[RoadSegmentState]
     junction_metrics: dict[str, JunctionMetricState] = {}
+    current_junction_comparison: dict[str, JunctionComparisonState] = {}
+    baseline_junction_comparison: dict[str, JunctionComparisonState] = {}
     visual_vehicles: list[VisualVehicleState] = []
     alerts: list[str]
+    spillback_locations: list[str] = []
+    network_summary: str = "Clear roads"
     green_wave_success_rate: float = 0.0
     current_run_ticks: int = 0
     vehicles_served_this_run: int = 0
@@ -179,6 +190,7 @@ class ConfigUpdate(BaseModel):
     tick_rate_hz: Optional[float] = None
     peak_arrival_rate: Optional[float] = None
     offpeak_arrival_rate: Optional[float] = None
+    waiting_speed_threshold_mps: Optional[float] = None
     preemption_hold_seconds: Optional[float] = None
     recovery_seconds: Optional[float] = None
 
@@ -202,3 +214,4 @@ class RunSummary(BaseModel):
     preemption_events: int
     green_wave_success_rate: float = 0.0
     junction_metrics: Optional[dict[str, dict[str, float]]] = None
+    run_seed: Optional[int] = None

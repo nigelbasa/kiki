@@ -17,6 +17,8 @@ from auth.middleware import require_admin
 UPLOAD_DIR = "/tmp/rwendo_uploads"
 VIDEOS_DIR = Path(__file__).resolve().parents[1] / "videos"
 OUTPUT_DIR = Path(tempfile.gettempdir()) / "rwendo_outputs"
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv"}
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 
 def _annotated_sidecar_paths(video_path: Path) -> tuple[Path, Path]:
@@ -108,18 +110,37 @@ def build_router(worker) -> APIRouter:
     router = APIRouter(prefix="/detection", tags=["detection"])
 
     @router.post("/upload")
-    async def upload(video: UploadFile = File(...)) -> dict:
+    async def upload(video: UploadFile = File(...), _=Depends(require_admin)) -> dict:
         os.makedirs(UPLOAD_DIR, exist_ok=True)
+        original_name = video.filename or "upload.mp4"
+        suffix = Path(original_name).suffix.lower()
+        if suffix not in ALLOWED_VIDEO_EXTENSIONS:
+            raise HTTPException(status_code=400, detail="Unsupported video format")
         job_id = uuid.uuid4().hex[:10]
-        dest = os.path.join(UPLOAD_DIR, f"{job_id}.mp4")
-        with open(dest, "wb") as f:
-            shutil.copyfileobj(video.file, f)
+        dest = os.path.join(UPLOAD_DIR, f"{job_id}{suffix}")
+        total_bytes = 0
+        try:
+            with open(dest, "wb") as f:
+                while True:
+                    chunk = await video.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total_bytes += len(chunk)
+                    if total_bytes > MAX_UPLOAD_BYTES:
+                        raise HTTPException(status_code=413, detail="Video exceeds 200MB limit")
+                    f.write(chunk)
+        finally:
+            await video.close()
 
-        worker.submit_job(job_id=job_id, video_path=dest)
+        try:
+            worker.submit_job(job_id=job_id, video_path=dest)
+        except RuntimeError as exc:
+            Path(dest).unlink(missing_ok=True)
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"job_id": job_id}
 
     @router.get("/status/{job_id}")
-    async def status(job_id: str) -> JSONResponse:
+    async def status(job_id: str, _=Depends(require_admin)) -> JSONResponse:
         st = worker.get_status(job_id)
         if st is None:
             output_path = _job_output_path(job_id)
@@ -133,7 +154,7 @@ def build_router(worker) -> APIRouter:
         return JSONResponse(payload)
 
     @router.get("/result/{job_id}")
-    async def result(job_id: str):
+    async def result(job_id: str, _=Depends(require_admin)):
         st = worker.get_status(job_id)
         if st is not None and st.status == "complete" and st.output_path and Path(st.output_path).exists():
             return FileResponse(st.output_path, media_type="video/mp4")

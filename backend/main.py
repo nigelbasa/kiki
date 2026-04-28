@@ -70,7 +70,7 @@ async def _startup() -> None:
     auth_store.seed_admin_user()
 
     register_socket_events(sio, engine)
-    broadcast_fn = make_broadcast_fn(sio)
+    broadcast_fn = make_broadcast_fn(sio, engine)
     loop = asyncio.get_running_loop()
     engine.start(broadcast_fn=broadcast_fn, loop=loop)
     detection_worker.configure(
