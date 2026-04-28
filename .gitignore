@@ -1,0 +1,12 @@
+node_modules/
+__pycache__/
+*.pyc
+.env
+dist/
+build/
+*/venv
+.DS_Store
+rwendo_uploads/
+rwendo_outputs/
+.codex-logs/
+.claude/
