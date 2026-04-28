@@ -1,7 +1,20 @@
 const BASE = 'http://localhost:8000';
+let portal = '';
+
+export function setPortal(nextPortal) {
+  portal = String(nextPortal || '').trim().toLowerCase();
+}
+
+export function getPortal() {
+  return portal;
+}
 
 function request(path, init = {}) {
-  return fetch(BASE + path, { credentials: 'include', ...init }).then(async (r) => {
+  const headers = new Headers(init.headers || {});
+  if (portal) {
+    headers.set('X-Rwendo-Portal', portal);
+  }
+  return fetch(BASE + path, { credentials: 'include', ...init, headers }).then(async (r) => {
     if (!r.ok) {
       const text = await r.text().catch(() => '');
       const err = new Error(`${r.status} ${r.statusText}: ${text}`);
@@ -39,4 +52,4 @@ export const postForm = (path, formData) =>
 
 export const fileUrl = (path) => BASE + path;
 
-export const api = { get, post, patch, del, postForm, fileUrl };
+export const api = { get, post, patch, del, postForm, fileUrl, setPortal, getPortal };

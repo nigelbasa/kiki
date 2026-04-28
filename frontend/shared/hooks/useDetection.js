@@ -7,6 +7,7 @@ const STORAGE_KEY = 'rwendo:last-detection';
 
 export function useDetection() {
   const { socket } = useSocket();
+  const [preferUploader, setPreferUploader] = useState(false);
   const [jobId, setJobId] = useState(() => {
     try {
       return JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '{}').jobId || null;
@@ -139,10 +140,9 @@ export function useDetection() {
         if (!cancelled) {
           console.error('detection status poll failed', error);
           if (error?.status === 404 && jobIdRef.current !== 'default-library-video') {
-            setJobId(null);
-            setJobComplete(false);
-            setJobError(null);
-            loadDefaultVideo();
+            setJobError('The detection job could not be found. It may have been cleared or the server may have restarted.');
+          } else if (error?.status >= 400) {
+            setJobError(error.message || 'Failed to load detection status');
           }
         }
       }
@@ -163,13 +163,15 @@ export function useDetection() {
   }, [jobId, jobComplete, jobError]);
 
   useEffect(() => {
+    if (preferUploader) return;
     if (jobId && jobId !== 'default-library-video') return;
     loadDefaultVideo();
-  }, [jobId, loadDefaultVideo]);
+  }, [jobId, loadDefaultVideo, preferUploader]);
 
   const uploadVideo = useCallback(async (file) => {
     const formData = new FormData();
     formData.append('video', file);
+    setPreferUploader(true);
     setJobComplete(false);
     setJobError(null);
     setJobProgress(0);
@@ -182,6 +184,18 @@ export function useDetection() {
     return job_id;
   }, []);
 
+  const useCustomVideo = useCallback(() => {
+    setPreferUploader(true);
+    setJobId(null);
+    setJobProgress(0);
+    setJobFrame(0);
+    setJobTotal(0);
+    setJobComplete(false);
+    setJobError(null);
+    setCounts(EMPTY_COUNTS);
+    setDurationSec(0);
+  }, []);
+
   const reset = useCallback(() => {
     del('/api/detection/reset').catch(() => {});
     try {
@@ -189,6 +203,7 @@ export function useDetection() {
     } catch {
       // ignore storage failures
     }
+    setPreferUploader(false);
     setJobId(null);
     setJobProgress(0);
     setJobFrame(0);
@@ -211,8 +226,10 @@ export function useDetection() {
     durationSec,
     resultUrl: jobId === 'default-library-video' ? '/api/detection/default/video' : jobId ? `/api/detection/result/${jobId}` : null,
     uploadVideo,
+    useCustomVideo,
     reset,
     isProcessing: Boolean(jobId && !jobComplete && !jobError),
     hasDefaultVideo: jobId === 'default-library-video',
+    preferUploader,
   };
 }

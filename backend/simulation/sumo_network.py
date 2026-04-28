@@ -61,6 +61,13 @@ APPROACHES: dict[str, dict[str, list[str]]] = {
     },
 }
 
+APPROACH_EDGE_TO_JUNCTION: dict[str, tuple[str, str]] = {
+    edge_id: (intersection_id, direction)
+    for intersection_id, directions in APPROACHES.items()
+    for direction, edge_ids in directions.items()
+    for edge_id in edge_ids
+}
+
 SEGMENTS: list[tuple[str, str, str]] = [
     ("TL_00->TL_10", "TL_00__TL_10", "TL_10__TL_00"),
     ("TL_10->TL_11", "TL_10__TL_11", "TL_11__TL_10"),
@@ -145,6 +152,10 @@ def _congestion_level(count: int) -> str:
     return "heavy"
 
 
+def _alert_location(ctl: _Ctl) -> str:
+    return f'{ctl.id} ({ctl.name.replace(" x ", " * ")})'
+
+
 def _vehicle_type_for(sumo_vehicle_id: str) -> str:
     for vehicle_type in VEHICLE_TYPES:
         if sumo_vehicle_id.endswith(vehicle_type):
@@ -218,6 +229,12 @@ class _Ctl:
         self.preemption_remaining = _preemption_duration()
 
 
+@dataclass
+class VehicleJunctionTrace:
+    junction_id: str
+    wait_seconds: float = 0.0
+
+
 class SumoNetwork:
     """Drives a SUMO process via TraCI and exposes the engine contract."""
 
@@ -231,11 +248,19 @@ class SumoNetwork:
         self.started: bool = False
 
         self._rng = random.Random()
+        self._run_seed = random.SystemRandom().randint(1, 2_147_483_647)
         self._route_counter = 0
         self._vehicle_counter = 0
         self._vehicle_spawn_ticks: dict[str, int] = {}
+        self._prev_vehicle_edges: dict[str, str] = {}
         self._connected = False
         self._cmd_q: queue.Queue[Callable[[], None]] = queue.Queue()
+        # Smoothed per-edge demand for adaptive green sizing. Raw presence/halt
+        # counts flicker between integer values tick-to-tick; the EMA gives a
+        # stable signal so green durations don't oscillate. Selection logic
+        # still uses the raw score so it can react quickly when a new platoon
+        # arrives — only sizing is smoothed.
+        self._edge_demand_ema: dict[str, float] = {}
 
         atexit.register(self._disconnect)
 
@@ -262,6 +287,8 @@ class SumoNetwork:
         self._route_counter = 0
         self._vehicle_counter = 0
         self._vehicle_spawn_ticks.clear()
+        self._prev_vehicle_edges.clear()
+        self._edge_demand_ema.clear()
         for ctl in self.intersections.values():
             ctl.spillback_active = False
             ctl.emergency_state = EmergencyState.IDLE
@@ -291,6 +318,13 @@ class SumoNetwork:
             ctl.mode = mode
         if self._connected and self.started:
             self._initialise_controllers()
+
+    def set_run_seed(self, seed: int) -> None:
+        self._run_seed = int(seed)
+        self._rng.seed(self._run_seed)
+
+    def get_run_seed(self) -> int:
+        return self._run_seed
 
     def queue_command(self, fn: Callable[[], None]) -> None:
         self._cmd_q.put(fn)
@@ -335,6 +369,7 @@ class SumoNetwork:
         self.process_pending_commands()
 
         completed: list[dict] = []
+        junction_throughput: dict[str, int] = {intersection_id: 0 for intersection_id in self.intersections}
         active_count = 0
 
         if self.started and self.running:
@@ -358,6 +393,27 @@ class SumoNetwork:
                 arrived_ids = traci.simulation.getArrivedIDList()
             except traci.TraCIException:
                 arrived_ids = []
+
+            current_vehicle_states: dict[str, dict[str, float | str]] = {}
+            try:
+                vehicle_ids = traci.vehicle.getIDList()
+                active_count = len(vehicle_ids)
+                for vehicle_id in vehicle_ids:
+                    edge_id = traci.vehicle.getRoadID(vehicle_id)
+                    speed = traci.vehicle.getSpeed(vehicle_id)
+                    current_vehicle_states[vehicle_id] = {
+                        "edge_id": edge_id,
+                        "speed": float(speed),
+                    }
+                    previous_edge = self._prev_vehicle_edges.get(vehicle_id)
+                    if previous_edge and previous_edge != edge_id:
+                        junction_info = APPROACH_EDGE_TO_JUNCTION.get(previous_edge)
+                        if junction_info is not None:
+                            junction_id, _ = junction_info
+                            junction_throughput[junction_id] += 1
+            except traci.TraCIException:
+                current_vehicle_states = {}
+
             for vehicle_id in arrived_ids:
                 spawn_tick = self._vehicle_spawn_ticks.pop(vehicle_id, self.tick_count)
                 completed.append({
@@ -366,8 +422,17 @@ class SumoNetwork:
                     "is_emergency": vehicle_id.endswith("ambulance"),
                     "travel_seconds": max(0.0, (self.tick_count - spawn_tick) * _step_length()),
                 })
+            self._prev_vehicle_edges = {
+                vehicle_id: str(snapshot["edge_id"])
+                for vehicle_id, snapshot in current_vehicle_states.items()
+            }
 
-        meta = {"completed": completed, "active_vehicle_count": active_count}
+        meta = {
+            "completed": completed,
+            "active_vehicle_count": active_count,
+            "junction_throughput": junction_throughput,
+            "vehicle_states": current_vehicle_states,
+        }
         return self._snapshot(), meta
 
     # ---------------------------------------------------------------- control
@@ -520,7 +585,10 @@ class SumoNetwork:
             return
 
         plan = PHASE_PLAN_MAP[ctl.id][ctl.current_plan_id]
-        min_green = max(10.0, float(cfg.get("MIN_GREEN")))
+        # Honour the operator-configured MIN_GREEN exactly — sizing and the
+        # truncation guard must agree, otherwise a config of e.g. 6s would
+        # be silently overridden here.
+        min_green = float(cfg.get("MIN_GREEN"))
         if ctl.stage_elapsed < min_green:
             return
 
@@ -632,10 +700,7 @@ class SumoNetwork:
             return round((min_green + max_green) / 2.0, 2)
 
         plan = PHASE_PLAN_MAP[ctl.id][plan_id]
-        demand = sum(
-            float(self._edge_presence(edge_id)) + float(self._edge_halts(edge_id)) * 0.85
-            for edge_id in plan.queue_edges
-        )
+        demand = sum(self._edge_sizing_demand(edge_id) for edge_id in plan.queue_edges)
         duration = min_green + min(demand * 0.9, max_green - min_green)
 
         coordination_bonus = 0.0
@@ -783,13 +848,13 @@ class SumoNetwork:
         alerts: list[str] = []
         if self.current_mode() == SignalMode.ADAPTIVE:
             for ctl in self.intersections.values():
+                total_queue = self._approach_queue(ctl.id, "NS") + self._approach_queue(ctl.id, "EW")
+                if total_queue >= max(8, int(cfg.get("SPILLBACK_THRESHOLD")) - 2):
+                    alerts.append(f'Congestion happening at "{_alert_location(ctl)}"')
                 if ctl.spillback_active:
-                    alerts.append(f"Spillback risk at {ctl.name}")
+                    alerts.append(f'Spillback taking place at "{_alert_location(ctl)}"')
                 if ctl.emergency_state != EmergencyState.IDLE:
-                    alerts.append(f"Emergency preemption active at {ctl.name}")
-            for segment in segments:
-                if segment.congestion_level == "heavy":
-                    alerts.append(f"Heavy congestion on segment {segment.id}")
+                    alerts.append(f'Emergency vehicle approaching "{_alert_location(ctl)}"')
 
         return SimulationTickState(
             tick=self.tick_count,
@@ -853,6 +918,22 @@ class SumoNetwork:
 
     def _edge_detection_score(self, edge_id: str) -> float:
         return float(self._edge_presence(edge_id)) + float(self._edge_halts(edge_id)) * 1.8
+
+    def _edge_sizing_demand(self, edge_id: str) -> float:
+        """Smoothed demand for green-duration sizing.
+
+        Uses the same `presence + halts*0.85` mix as the previous raw call but
+        runs it through an exponential moving average so a single noisy frame
+        cannot expand or shrink the green by several seconds. Alpha is small
+        enough to filter tick-level jitter while still tracking real arrivals
+        within ~3 seconds.
+        """
+        instant = float(self._edge_presence(edge_id)) + float(self._edge_halts(edge_id)) * 0.85
+        alpha = 0.35
+        previous = self._edge_demand_ema.get(edge_id, instant)
+        smoothed = previous + alpha * (instant - previous)
+        self._edge_demand_ema[edge_id] = smoothed
+        return smoothed
 
     @staticmethod
     def _segment_vehicle_count(edge_id: str) -> int:
@@ -1127,6 +1208,10 @@ class SumoMetricsAccumulator:
         self._recent_completion_ticks: deque[int] = deque()
         self._recent_congestion_scores: deque[float] = deque()
         self._recent_green_wave_outcomes: deque[int] = deque(maxlen=180)
+        self._active_vehicle_traces: dict[str, VehicleJunctionTrace] = {}
+        # Sampled chart-relevant series so frontend overlays can be aligned by
+        # elapsed simulated seconds rather than tick count.
+        self._timeseries: list[dict[str, float]] = []
         self.junction_samples: dict[str, dict[str, float]] = {
             intersection_id: {
                 "ns_queue_total": 0.0,
@@ -1134,12 +1219,16 @@ class SumoMetricsAccumulator:
                 "ns_presence_total": 0.0,
                 "ew_presence_total": 0.0,
                 "max_queue": 0.0,
+                "wait_seconds_total": 0.0,
+                "vehicle_count": 0.0,
+                "spillback_events": 0.0,
             }
             for intersection_id in INTERSECTIONS
         }
 
     def record_tick(self, state: SimulationTickState, network: SumoNetwork, meta: dict) -> None:
         tick = int(state.tick or (self.tick_count + 1))
+        self._update_vehicle_wait_traces(meta)
 
         for record in meta.get("completed", []):
             self.total_wait_seconds += float(record.get("wait_seconds", 0.0))
@@ -1165,6 +1254,7 @@ class SumoMetricsAccumulator:
             spillback = spillback or active
             if active and not self._prev_spillback_by_intersection.get(intersection.id, False):
                 self.spillback_events += 1
+                self.junction_samples[intersection.id]["spillback_events"] += 1
             self._prev_spillback_by_intersection[intersection.id] = active
         self._prev_spillback = spillback
 
@@ -1184,6 +1274,81 @@ class SumoMetricsAccumulator:
             sample["max_queue"] = max(sample["max_queue"], snapshot["ns_queue"] + snapshot["ew_queue"])
 
         self.tick_count += 1
+
+        # Sample the chart series ~once per simulated second so the timeseries
+        # is bounded regardless of tick rate. _step_length() is the seconds per
+        # tick.
+        sample_every = max(1, int(round(1.0 / max(_step_length(), 1e-3))))
+        if self.tick_count % sample_every == 0:
+            elapsed_s = round(self.tick_count * _step_length(), 2)
+            self._timeseries.append({
+                "elapsed_s": elapsed_s,
+                "wait": float(self.avg_wait_time()),
+                "throughput": float(self.current_throughput_per_min()),
+                "congestion": float(self.current_congestion()),
+                "green_wave": float(round(self.current_success_rate() * 100.0, 2)),
+            })
+            # Cap to ~30 minutes of samples to bound memory.
+            if len(self._timeseries) > 1800:
+                self._timeseries = self._timeseries[-1800:]
+
+    def timeseries(self) -> list[dict[str, float]]:
+        return list(self._timeseries)
+
+    def current_elapsed_seconds(self) -> float:
+        return round(self.tick_count * _step_length(), 2)
+
+    def _update_vehicle_wait_traces(self, meta: dict) -> None:
+        active_vehicle_states = meta.get("vehicle_states", {}) or {}
+        threshold = float(cfg.get("WAITING_SPEED_THRESHOLD_MPS"))
+        dt = _step_length()
+        seen_vehicle_ids = set(active_vehicle_states.keys())
+
+        for vehicle_id, trace in list(self._active_vehicle_traces.items()):
+            snapshot = active_vehicle_states.get(vehicle_id)
+            if snapshot is None:
+                self._finalize_vehicle_trace(vehicle_id)
+                continue
+
+            edge_id = str(snapshot.get("edge_id", ""))
+            junction_info = APPROACH_EDGE_TO_JUNCTION.get(edge_id)
+            if junction_info is None:
+                self._finalize_vehicle_trace(vehicle_id)
+                continue
+
+            junction_id, _ = junction_info
+            if junction_id != trace.junction_id:
+                self._finalize_vehicle_trace(vehicle_id)
+
+        for vehicle_id in seen_vehicle_ids:
+            snapshot = active_vehicle_states.get(vehicle_id) or {}
+            edge_id = str(snapshot.get("edge_id", ""))
+            junction_info = APPROACH_EDGE_TO_JUNCTION.get(edge_id)
+            if junction_info is None:
+                continue
+
+            junction_id, _ = junction_info
+            trace = self._active_vehicle_traces.get(vehicle_id)
+            if trace is None:
+                trace = VehicleJunctionTrace(junction_id=junction_id)
+                self._active_vehicle_traces[vehicle_id] = trace
+            elif trace.junction_id != junction_id:
+                self._finalize_vehicle_trace(vehicle_id)
+                trace = VehicleJunctionTrace(junction_id=junction_id)
+                self._active_vehicle_traces[vehicle_id] = trace
+
+            speed = float(snapshot.get("speed", 0.0))
+            if speed <= threshold:
+                trace.wait_seconds += dt
+
+    def _finalize_vehicle_trace(self, vehicle_id: str) -> None:
+        trace = self._active_vehicle_traces.pop(vehicle_id, None)
+        if trace is None:
+            return
+
+        sample = self.junction_samples[trace.junction_id]
+        sample["wait_seconds_total"] += trace.wait_seconds
+        sample["vehicle_count"] += 1.0
 
     def avg_wait_time(self) -> float:
         return round(self.total_wait_seconds / max(self.vehicles_completed, 1), 2)
@@ -1248,7 +1413,12 @@ class SumoMetricsAccumulator:
             for approach in intersection.approaches
         )
         segment_load = sum(segment.vehicles_in_transit for segment in state.segments)
-        return round((queue_load * 1.25 + segment_load * 0.7) / max(len(state.intersections) * 2, 1), 2)
+        approach_count = sum(len(intersection.approaches) for intersection in state.intersections)
+        segment_count = max(len(state.segments), 1)
+        # Normalize each load by its own population so the score is a per-unit
+        # density, not a sum-of-averages over an arbitrary divisor.
+        normalized = (queue_load * 1.25) / max(approach_count, 1) + (segment_load * 0.7) / segment_count
+        return round(normalized, 2)
 
     def _record_green_wave(self, network: SumoNetwork) -> None:
         checks: list[tuple[bool, bool]] = []
@@ -1282,7 +1452,14 @@ class SumoMetricsAccumulator:
             else:
                 self._recent_green_wave_outcomes.append(0)
 
-    def to_run_summary(self, run_id: str, started_at: str, scenario: str, mode: SignalMode) -> RunSummary:
+    def to_run_summary(
+        self,
+        run_id: str,
+        started_at: str,
+        scenario: str,
+        mode: SignalMode,
+        run_seed: Optional[int] = None,
+    ) -> RunSummary:
         avg_wait = self.avg_wait_time()
         return RunSummary(
             run_id=run_id,
@@ -1303,6 +1480,7 @@ class SumoMetricsAccumulator:
             preemption_events=self.preemption_events,
             green_wave_success_rate=round(self.success_rate(), 4),
             junction_metrics=self.junction_metrics(),
+            run_seed=run_seed,
         )
 
     def junction_metrics(self) -> dict[str, dict[str, float]]:
@@ -1315,6 +1493,10 @@ class SumoMetricsAccumulator:
                 "avg_ns_presence": round(sample["ns_presence_total"] / ticks, 2),
                 "avg_ew_presence": round(sample["ew_presence_total"] / ticks, 2),
                 "max_total_queue": round(sample["max_queue"], 2),
+                "avg_wait_time": round(sample["wait_seconds_total"] / max(sample["vehicle_count"], 1.0), 2),
+                "vehicle_count": int(round(sample["vehicle_count"])),
+                "throughput_vpm": round(sample["vehicle_count"] / max((ticks * _step_length()) / 60.0, 1 / 60.0), 2),
+                "spillback_events": int(round(sample["spillback_events"])),
             }
         return result
 
@@ -1335,6 +1517,8 @@ class SumoMetricsAccumulator:
         self._recent_completion_ticks.clear()
         self._recent_congestion_scores.clear()
         self._recent_green_wave_outcomes.clear()
+        self._active_vehicle_traces.clear()
+        self._timeseries = []
         self.junction_samples = {
             intersection_id: {
                 "ns_queue_total": 0.0,
@@ -1342,6 +1526,9 @@ class SumoMetricsAccumulator:
                 "ns_presence_total": 0.0,
                 "ew_presence_total": 0.0,
                 "max_queue": 0.0,
+                "wait_seconds_total": 0.0,
+                "vehicle_count": 0.0,
+                "spillback_events": 0.0,
             }
             for intersection_id in INTERSECTIONS
         }

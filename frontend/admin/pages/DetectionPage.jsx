@@ -79,7 +79,7 @@ function ProcessingState({ progress, frame, total }) {
   );
 }
 
-function DoneState({ videoUrl, counts, totalFrames, durationSec, onReset, title }) {
+function DoneState({ videoUrl, counts, totalFrames, durationSec, onReset, onUseCustomVideo, title, hasDefaultVideo }) {
   const totalDetections = Object.values(counts).reduce((sum, value) => sum + (value || 0), 0);
 
   return (
@@ -132,12 +132,22 @@ function DoneState({ videoUrl, counts, totalFrames, durationSec, onReset, title 
         </div>
       </div>
 
-      <button
-        onClick={onReset}
-        className="mt-8 rounded-full border border-rwendo-accent px-5 py-2.5 text-sm font-semibold text-rwendo-accent transition hover:bg-rwendo-accent hover:text-white"
-      >
-        Detect another video
-      </button>
+      <div className="mt-8 flex flex-wrap gap-3">
+        <button
+          onClick={onUseCustomVideo}
+          className="rounded-full bg-rwendo-accent px-5 py-2.5 text-sm font-semibold text-white transition hover:opacity-90"
+        >
+          Use your own video
+        </button>
+        {!hasDefaultVideo && (
+          <button
+            onClick={onReset}
+            className="rounded-full border border-rwendo-accent px-5 py-2.5 text-sm font-semibold text-rwendo-accent transition hover:bg-rwendo-accent hover:text-white"
+          >
+            Detect another video
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -155,16 +165,19 @@ export default function DetectionPage({ detection }) {
     durationSec,
     resultUrl,
     uploadVideo,
+    useCustomVideo,
     reset,
     isProcessing,
     hasDefaultVideo,
+    preferUploader,
   } = detection;
 
   const status = useMemo(() => {
+    if (preferUploader) return 'idle';
     if (isProcessing) return 'processing';
     if (jobComplete && resultUrl) return 'done';
     return 'idle';
-  }, [isProcessing, jobComplete, resultUrl]);
+  }, [isProcessing, jobComplete, preferUploader, resultUrl]);
 
   async function startDetection() {
     if (!file) return;
@@ -201,7 +214,12 @@ export default function DetectionPage({ detection }) {
           totalFrames={jobTotal}
           durationSec={durationSec}
           onReset={resetAll}
+          onUseCustomVideo={() => {
+            setFile(null);
+            useCustomVideo();
+          }}
           title={hasDefaultVideo ? 'Bundled annotated video' : 'Detection complete'}
+          hasDefaultVideo={hasDefaultVideo}
         />
       )}
     </div>

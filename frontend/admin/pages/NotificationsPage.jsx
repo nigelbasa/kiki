@@ -26,8 +26,6 @@ export default function NotificationsPage({ user }) {
 
   useEffect(() => {
     loadAlerts();
-    const interval = window.setInterval(loadAlerts, 15000);
-    return () => window.clearInterval(interval);
   }, [loadAlerts]);
 
   useEffect(() => {
@@ -73,12 +71,6 @@ export default function NotificationsPage({ user }) {
             </p>
           </div>
           <div className="flex gap-3">
-            <button
-              onClick={loadAlerts}
-              className="rounded-full border border-rwendo-accent px-5 py-2 text-sm font-semibold text-rwendo-accent transition hover:bg-rwendo-accent hover:text-white"
-            >
-              Refresh
-            </button>
             {isAdmin && (
               <button
                 onClick={clearAlerts}
@@ -106,8 +98,13 @@ export default function NotificationsPage({ user }) {
                   className={`rounded-2xl border-l-4 bg-slate-50 px-5 py-4 ${LEVEL_STYLES[alert.level] || LEVEL_STYLES.info}`}
                 >
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-                      {alert.level}
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                        {alert.category || alert.level}
+                      </div>
+                      <div className="mt-1 text-sm font-semibold text-slate-900">
+                        {alert.title || 'Traffic Alert'}
+                      </div>
                     </div>
                     <div className="text-xs text-slate-500">{new Date(alert.timestamp).toLocaleString()}</div>
                   </div>

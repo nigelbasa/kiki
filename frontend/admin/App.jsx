@@ -4,6 +4,7 @@ import SimulationPage from './pages/SimulationPage.jsx';
 import AnalyticsPage from './pages/AnalyticsPage.jsx';
 import DetectionPage from './pages/DetectionPage.jsx';
 import NotificationsPage from './pages/NotificationsPage.jsx';
+import ReportsPage from './pages/ReportsPage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import ProfilePage from './pages/ProfilePage.jsx';
 import { useSimulation } from '@shared/hooks/useSimulation';
@@ -61,9 +62,20 @@ function GearIcon() {
   );
 }
 
+function ReportIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <path d="M7 3h7l5 5v13H7z" />
+      <path d="M14 3v5h5" />
+      <path d="M10 13h6M10 17h6M10 9h2" />
+    </svg>
+  );
+}
+
 const NAV_ITEMS = [
   { id: 'simulation', label: 'Simulation', icon: SimIcon, path: '/simulation' },
   { id: 'analytics', label: 'Analytics', icon: ChartIcon, path: '/analytics' },
+  { id: 'reports', label: 'Reports', icon: ReportIcon, path: '/reports' },
   { id: 'notifications', label: 'Notifications', icon: BellIcon, path: '/notifications' },
   { id: 'detection', label: 'Detection', icon: CameraIcon, path: '/detection' },
   { id: 'settings', label: 'Settings', icon: GearIcon, path: '/settings' },
@@ -138,6 +150,7 @@ export default function App({ user, onLogout }) {
         <Routes>
           <Route path="/simulation" element={<SimulationPage user={user} detection={detection} />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
+          <Route path="/reports" element={<ReportsPage />} />
           <Route path="/notifications" element={<NotificationsPage user={user} />} />
           <Route path="/detection" element={<DetectionPage detection={detection} />} />
           <Route path="/settings" element={<SettingsPage />} />

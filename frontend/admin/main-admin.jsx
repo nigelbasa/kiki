@@ -4,10 +4,13 @@ import { BrowserRouter } from 'react-router-dom';
 import App from './App.jsx';
 import LoginPage from './pages/LoginPage.jsx';
 import { useAuth } from '@shared/hooks/useAuth';
+import { setPortal } from '@shared/api/client';
 import '@shared/styles.css';
 
+setPortal('admin');
+
 function AuthGate() {
-  const { user, login, logout, loading } = useAuth();
+  const { user, login, logout, loading } = useAuth('admin');
 
   if (loading) {
     return (
