@@ -48,6 +48,8 @@ def init_db() -> None:
         conn.execute("ALTER TABLE simulation_runs ADD COLUMN avg_emergency_travel_time REAL DEFAULT 0")
     if "run_seed" not in columns:
         conn.execute("ALTER TABLE simulation_runs ADD COLUMN run_seed INTEGER")
+    if "avg_queue_length" not in columns:
+        conn.execute("ALTER TABLE simulation_runs ADD COLUMN avg_queue_length REAL DEFAULT 0")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS tick_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -107,15 +109,15 @@ def save_run(run: dict) -> None:
     conn.execute(
         """INSERT OR REPLACE INTO simulation_runs
         (run_id, started_at, ended_at, scenario, mode, duration_ticks,
-         avg_wait_time, total_wait_seconds, throughput_per_min, avg_congestion,
+         avg_wait_time, avg_queue_length, total_wait_seconds, throughput_per_min, avg_congestion,
          vehicles_completed, emergency_vehicles_completed, avg_emergency_travel_time,
          spillback_events, preemption_events, green_wave_success_rate,
          ran_at, junction_metrics_json, run_seed)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             run["run_id"], run["started_at"], run.get("ended_at", ""),
             run["scenario"], run["mode"], run["duration_ticks"],
-            run["avg_wait_time"], run.get("total_wait_seconds", 0.0), run["throughput_per_min"],
+            run["avg_wait_time"], run.get("avg_queue_length", 0.0), run.get("total_wait_seconds", 0.0), run["throughput_per_min"],
             run["avg_congestion"], run["vehicles_completed"],
             run.get("emergency_vehicles_completed", 0), run.get("avg_emergency_travel_time", 0.0),
             run["spillback_events"], run["preemption_events"],

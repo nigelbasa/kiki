@@ -1,20 +1,27 @@
 import React, { useState } from 'react';
 import LoginCard from '@shared/components/LoginCard';
 
-export default function LoginPage({ login, logout }) {
+export default function LoginPage({ login }) {
   const [error, setError] = useState(null);
 
   async function handleSubmit(username, password) {
     setError(null);
+    if (!username || !password) {
+      setError('Username and password are required.');
+      return;
+    }
     try {
-      const u = await login(username, password);
-      if (u.role !== 'admin') {
-        setError('Access denied - admin accounts only');
-        await logout();
-      }
+      await login(username, password);
     } catch (e) {
-      if (e.status === 401) setError('Invalid credentials.');
-      else setError(e.message || 'Sign in failed');
+      if (e.status === 401) {
+        setError('Invalid credentials.');
+      } else if (e.status === 403) {
+        setError(e.detail || 'Access denied — admin accounts only.');
+      } else if (e.status === 440) {
+        setError(e.message);
+      } else {
+        setError(e.detail || e.message || 'Sign in failed.');
+      }
     }
   }
 
@@ -27,3 +34,4 @@ export default function LoginPage({ login, logout }) {
     />
   );
 }
+

@@ -105,6 +105,7 @@ class SimulationEngine:
                 "mode": summary.mode.value,
                 "duration_ticks": summary.duration_ticks,
                 "avg_wait_time": avg_wait,
+                "avg_queue_length": summary.avg_queue_length,
                 "total_wait_seconds": summary.total_wait_seconds,
                 "throughput_per_min": summary.throughput_per_min,
                 "avg_congestion": summary.avg_congestion,
@@ -238,6 +239,25 @@ class SimulationEngine:
         self._last_state = None
         self._queue_network_command(self.network.reset)
 
+    def stop_run(self) -> None:
+        """End the current run: finalize the summary (so it lands in history /
+        analytics) and tear down SUMO. Distinct from `pause` which just halts
+        time progression but keeps the run open."""
+        self.reset()
+
+    def spawn_random_emergency(self) -> dict:
+        """Inject an ambulance at a randomly chosen junction approach. Returns
+        the chosen target so the UI can confirm what happened. Works in both
+        fixed and adaptive runs; adaptive auto-preempts when the vehicle nears
+        the stop bar."""
+        junction_ids = list(self.network.intersections.keys())
+        intersection_id = random.choice(junction_ids)
+        approach = random.choice(["NS", "EW"])
+        self._queue_network_command(
+            lambda: self.network.spawn_emergency_vehicle(intersection_id, approach)
+        )
+        return {"intersection_id": intersection_id, "approach": approach}
+
     def set_mode(self, intersection_id: str, mode: SignalMode) -> None:
         self.network.get_intersection(intersection_id).set_mode(mode)
         self._queue_network_command(lambda: self.network.get_intersection(intersection_id).set_mode(mode))
@@ -269,6 +289,13 @@ class SimulationEngine:
         self.network.get_intersection(intersection_id).trigger_preemption(approach)
         self._queue_network_command(
             lambda: self.network.get_intersection(intersection_id).trigger_preemption(approach)
+        )
+
+    def spawn_emergency_vehicle(self, intersection_id: str, approach: str) -> None:
+        """Inject an ambulance at the chosen approach. Adaptive mode will
+        auto-detect and preempt; fixed mode just runs the vehicle through."""
+        self._queue_network_command(
+            lambda: self.network.spawn_emergency_vehicle(intersection_id, approach)
         )
 
     def set_config(self, updates: dict) -> dict:
@@ -305,6 +332,9 @@ class SimulationEngine:
 
     def _record_alerts(self, alerts: list[str]) -> None:
         """Append only alerts that are new this tick (dedup against previous tick)."""
+        if self.network.current_mode() != SignalMode.ADAPTIVE:
+            self._prev_alerts = set(alerts)
+            return
         new_set: set[str] = set()
         now = _now_iso()
         for message in alerts:
@@ -444,6 +474,11 @@ class SimulationEngine:
 
     # -------------------------------------------------------------------- loop
     def _run_loop(self) -> None:
+        # Target-time scheduling — `time.sleep(dt)` after the work would make
+        # the loop run at 1/(work_time + dt). For a 10 Hz target we want the
+        # interval between tick STARTS to be dt, not work + dt. So track the
+        # next deadline and sleep only for the remaining slack.
+        next_tick_at = time.monotonic()
         while not self._stop_flag.is_set():
             dt = 1.0 / max(cfg.get("TICK_RATE_HZ"), 0.1)
             try:
@@ -511,9 +546,6 @@ class SimulationEngine:
                             )
                         except Exception:
                             pass
-                        live_summary = self.get_live_run_summary()
-                        if live_summary is not None:
-                            self._persist_run_summary(live_summary)
 
                     if self._broadcast_fn is not None and self._loop is not None:
                         try:
@@ -524,4 +556,12 @@ class SimulationEngine:
                             pass
             except Exception as exc:
                 self._handle_runtime_error(exc)
-            time.sleep(dt)
+            next_tick_at += dt
+            sleep_for = next_tick_at - time.monotonic()
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            else:
+                # Engine fell behind real-time this tick (work took longer than
+                # dt). Reset the deadline to "now" so we don't try to burn
+                # through a backlog of catch-up ticks with no sleep at all.
+                next_tick_at = time.monotonic()

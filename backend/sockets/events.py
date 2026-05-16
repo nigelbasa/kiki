@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 
-import analytics_ml
+import analytics_summary
 import db
 from models.schemas import (
     PreemptCommand,
@@ -14,6 +15,12 @@ from models.schemas import (
 )
 
 log = logging.getLogger("rwendo.sockets")
+
+# Throttle analytics:update broadcasts. Recomputing the summary from SQLite
+# on every tick (10 Hz) is the wrong order of magnitude — the analytics page
+# only displays per-completed-run aggregates, which change at most once per
+# run. 1 Hz is plenty and removes a measurable engine-loop overhead.
+_ANALYTICS_BROADCAST_INTERVAL_SECONDS = 1.0
 
 
 def _now_iso() -> str:
@@ -53,18 +60,10 @@ def _alert_title(message: str) -> str:
 
 def _analytics_payload(engine) -> dict:
     runs = db.get_all_runs()
-    live = engine.get_live_run_summary()
-    if live is not None:
-        live_row = live.model_dump()
-        live_row["mode"] = live.mode.value
-        runs = [live_row, *[run for run in runs if run.get("run_id") != live.run_id]]
-    adaptive_runs = [
-        run for run in runs
-        if run.get("mode") == "adaptive" and int(run.get("duration_ticks") or 0) > 0
-    ]
+    adaptive_runs = analytics_summary.adaptive_runs(runs)
     return {
         "runs": adaptive_runs,
-        "predictions": analytics_ml.build_predictions(runs, engine.get_current_state()),
+        "summary": analytics_summary.summarize_runs(runs),
     }
 
 
@@ -96,6 +95,8 @@ def register(sio, engine) -> None:
             engine.resume()
         elif cmd.action == "reset":
             engine.reset()
+        elif cmd.action == "stop_run":
+            engine.stop_run()
         elif cmd.action == "set_mode":
             if cmd.intersection_id and cmd.mode is not None:
                 engine.set_mode(cmd.intersection_id, SignalMode(cmd.mode))
@@ -115,15 +116,45 @@ def register(sio, engine) -> None:
         await sio.emit("simulation:tick", engine.get_current_state().model_dump())
         await sio.emit("analytics:update", _analytics_payload(engine))
 
+    @sio.on("simulation:spawn_emergency")
+    async def on_spawn_emergency(sid, data):  # noqa: ARG001
+        cmd = PreemptCommand.model_validate(data)
+        engine.spawn_emergency_vehicle(cmd.intersection_id, cmd.approach)
+        await sio.emit("simulation:tick", engine.get_current_state().model_dump())
+
+    @sio.on("simulation:spawn_emergency_random")
+    async def on_spawn_random(sid, _data):  # noqa: ARG001
+        target = engine.spawn_random_emergency()
+        await sio.emit("simulation:tick", engine.get_current_state().model_dump())
+        await sio.emit("simulation:emergency_spawned", target)
+
 
 def make_broadcast_fn(sio, engine):
     seen_alerts: set[str] = set()
+    last_analytics_emit = 0.0
+    prev_run_count = 0
 
     async def broadcast_tick(state: SimulationTickState) -> None:
+        nonlocal seen_alerts, last_analytics_emit, prev_run_count
+
+        # simulation:tick is the hot path — emit every tick, no DB work.
         await sio.emit("simulation:tick", state.model_dump())
-        await sio.emit("analytics:update", _analytics_payload(engine))
-        nonlocal seen_alerts
+
+        # analytics:update is the cold path. Recompute at most once per
+        # _ANALYTICS_BROADCAST_INTERVAL_SECONDS, OR immediately when a run
+        # completes (so the run-history tables refresh promptly).
+        now = time.monotonic()
+        run_count = len(engine.run_history)
+        run_completed = run_count > prev_run_count
+        prev_run_count = run_count
+        if run_completed or now - last_analytics_emit >= _ANALYTICS_BROADCAST_INTERVAL_SECONDS:
+            await sio.emit("analytics:update", _analytics_payload(engine))
+            last_analytics_emit = now
+
         current_alerts = set(state.alerts)
+        if state.current_mode != SignalMode.ADAPTIVE:
+            seen_alerts = current_alerts
+            return
         new_alerts = [message for message in state.alerts if message not in seen_alerts]
         for message in new_alerts:
             await sio.emit(

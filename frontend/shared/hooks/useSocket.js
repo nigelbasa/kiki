@@ -2,14 +2,20 @@ import { useEffect, useState } from 'react';
 import { io } from 'socket.io-client';
 import { getPortal } from '@shared/api/client';
 
-const BACKEND_URL = 'http://localhost:8000';
+function backendUrl() {
+  if (typeof window !== 'undefined' && window.location?.hostname) {
+    const protocol = window.location.protocol || 'http:';
+    return `${protocol}//${window.location.hostname}:8000`;
+  }
+  return 'http://localhost:8000';
+}
 
 let _socket = null;
 const _connectedListeners = new Set();
 
 function getSocket() {
   if (_socket) return _socket;
-  _socket = io(BACKEND_URL, {
+  _socket = io(backendUrl(), {
     transports: ['websocket', 'polling'],
     auth: { portal: getPortal() },
     query: { portal: getPortal() },

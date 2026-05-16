@@ -65,7 +65,7 @@ def create_public_user(
 ) -> User:
     row = db.create_user(
         {
-            "username": username,
+            "username": _normalize_username(username),
             "display_name": display_name,
             "role": "public",
             "password_hash": hash_pw(password),
@@ -77,17 +77,32 @@ def create_public_user(
     return _row_to_user(row)  # type: ignore[return-value]
 
 
+def _normalize_username(username: str) -> str:
+    return (username or "").strip().lower()
+
+
 def get_user(username: str) -> Optional[User]:
-    return _row_to_user(db.get_user(username))
+    return _row_to_user(db.get_user(_normalize_username(username)))
 
 
-def authenticate(username: str, password: str) -> Optional[str]:
+def verify_credentials(username: str, password: str) -> Optional[User]:
     user = get_user(username)
     if user is None or user._password_hash != hash_pw(password):
         return None
+    return user
+
+
+def create_session(username: str) -> str:
     token = secrets.token_hex(32)
     db.create_session(token, username)
     return token
+
+
+def authenticate(username: str, password: str) -> Optional[str]:
+    user = verify_credentials(username, password)
+    if user is None:
+        return None
+    return create_session(username)
 
 
 def get_user_from_token(token: Optional[str]) -> Optional[User]:

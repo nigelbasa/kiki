@@ -2,23 +2,37 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { get } from '@shared/api/client';
 import { useSimulation } from '@shared/hooks/useSimulation';
 
+// 4-junction rectangle. Corners in SVG space (560 × 440 viewBox).
 const NODE_POS = {
-  TL_00: { x: 118, y: 116 },
-  TL_10: { x: 118, y: 320 },
-  TL_11: { x: 430, y: 320 },
+  TL_00: { x: 140, y: 100 }, // NW
+  TL_01: { x: 420, y: 100 }, // NE
+  TL_10: { x: 140, y: 320 }, // SW
+  TL_11: { x: 420, y: 320 }, // SE
 };
 
 const ROAD_PATHS = {
-  'TL_00->TL_10': 'M118 42 L118 392',
-  'TL_10->TL_11': 'M42 320 L512 320',
-  'TL_00->TL_11': 'M44 116 L118 116 L430 320',
-  tl11South: 'M430 320 L430 392',
+  'TL_00->TL_01': 'M140 100 L420 100', // top perimeter
+  'TL_01->TL_11': 'M420 100 L420 320', // right perimeter
+  'TL_10->TL_11': 'M140 320 L420 320', // bottom perimeter
+  'TL_00->TL_10': 'M140 100 L140 320', // left perimeter
+  // External stubs (drawn separately to keep the rectangle reading clearly).
+  externalStubs: [
+    'M140 100 L140 40',  // NW north
+    'M140 100 L60 100',  // NW west
+    'M420 100 L420 40',  // NE north
+    'M420 100 L500 100', // NE east
+    'M140 320 L140 400', // SW south
+    'M140 320 L60 320',  // SW west
+    'M420 320 L420 400', // SE south
+    'M420 320 L500 320', // SE east
+  ],
 };
 
 const SEGMENT_META = {
-  'TL_00->TL_10': { label: 'Julius Nyerere southbound', short: 'TL_00 to TL_10' },
-  'TL_10->TL_11': { label: 'Borrowdale eastbound', short: 'TL_10 to TL_11' },
-  'TL_00->TL_11': { label: 'Samora diagonal', short: 'TL_00 to TL_11' },
+  'TL_00->TL_01': { label: 'Top perimeter — NW to NE', short: 'NW -> NE' },
+  'TL_01->TL_11': { label: 'Right perimeter — NE to SE', short: 'NE -> SE' },
+  'TL_10->TL_11': { label: 'Bottom perimeter — SW to SE', short: 'SW -> SE' },
+  'TL_00->TL_10': { label: 'Left perimeter — NW to SW', short: 'NW -> SW' },
 };
 
 const SEGMENT_STROKE = {
@@ -40,12 +54,14 @@ const PHASE_COLOR = {
 };
 
 const OUTER_APPROACH_LABELS = [
-  { key: 'TL_00:NS', x: 136, y: 70, align: 'start', label: 'North approach' },
-  { key: 'TL_00:EW', x: 66, y: 134, align: 'end', label: 'West approach' },
-  { key: 'TL_10:NS', x: 136, y: 378, align: 'start', label: 'South approach' },
-  { key: 'TL_10:EW', x: 66, y: 338, align: 'end', label: 'West approach' },
-  { key: 'TL_11:EW', x: 494, y: 302, align: 'start', label: 'East approach' },
-  { key: 'TL_11:NS', x: 448, y: 378, align: 'start', label: 'South approach' },
+  { key: 'TL_00:NS', x: 156, y: 40,  align: 'start', label: 'NW · North' },
+  { key: 'TL_00:EW', x: 78,  y: 116, align: 'end',   label: 'NW · West'  },
+  { key: 'TL_01:NS', x: 436, y: 40,  align: 'start', label: 'NE · North' },
+  { key: 'TL_01:EW', x: 506, y: 116, align: 'start', label: 'NE · East'  },
+  { key: 'TL_10:NS', x: 156, y: 416, align: 'start', label: 'SW · South' },
+  { key: 'TL_10:EW', x: 78,  y: 336, align: 'end',   label: 'SW · West'  },
+  { key: 'TL_11:NS', x: 436, y: 416, align: 'start', label: 'SE · South' },
+  { key: 'TL_11:EW', x: 506, y: 336, align: 'start', label: 'SE · East'  },
 ];
 
 function SignalIcon({ className = 'h-5 w-5' }) {
@@ -74,36 +90,23 @@ function severityFromLevel(level) {
 
 function buildRouteSuggestions(segments, alerts) {
   const busy = segments.filter((segment) => segment.congestion_level !== 'clear');
-  const suggestions = busy.map((segment) => {
-    if (segment.id === 'TL_00->TL_11') {
-      return {
-        title: 'Diagonal is slower',
-        body: 'Use TL_00 -> TL_10 -> TL_11 until the Samora connector clears.',
-      };
-    }
-    if (segment.id === 'TL_10->TL_11') {
-      return {
-        title: 'Bottom corridor is building up',
-        body: 'If you are still near TL_00, use the diagonal to reach TL_11.',
-      };
-    }
-    return {
-      title: 'Southbound pressure at TL_00',
-      body: 'Delay the TL_00 -> TL_10 movement or approach through TL_11 first if possible.',
-    };
-  });
+  const meta = (id) => SEGMENT_META[id]?.short || id;
+  const suggestions = busy.map((segment) => ({
+    title: `${meta(segment.id)} is building up`,
+    body: 'Consider taking the opposite side of the rectangle to avoid this corridor.',
+  }));
 
   if (alerts.some((alert) => alert.level === 'critical')) {
     suggestions.unshift({
       title: 'Emergency movement active',
-      body: 'Expect short holds around the affected junction while signals recover.',
+      body: 'Expect short holds around the affected corner while signals recover.',
     });
   }
 
   if (suggestions.length === 0) {
     suggestions.push({
       title: 'Primary routes are open',
-      body: 'All three visible corridors are moving normally right now.',
+      body: 'All four perimeter corridors are moving normally right now.',
     });
   }
 
@@ -249,25 +252,34 @@ export default function LiveMapPage({ user, onLogout, onOpenProfile }) {
               <svg viewBox="0 0 560 440" className="h-auto w-full">
                 <rect x="0" y="0" width="560" height="440" rx="28" className="fill-[#edf2f7]" />
 
-                <path d={ROAD_PATHS.tl11South} className="fill-none stroke-[#5b4a3a]" strokeWidth="30" strokeLinecap="round" />
-                <path d={ROAD_PATHS.tl11South} className="fill-none stroke-[#334155]" strokeWidth="24" strokeLinecap="round" />
-                <path d={ROAD_PATHS.tl11South} className="fill-none stroke-[#fbbf24]" strokeWidth="1.8" strokeLinecap="round" />
+                {/* External stubs — neutral grey, drawn first so the perimeter overlays them. */}
+                {ROAD_PATHS.externalStubs.map((d, index) => (
+                  <g key={`stub-${index}`}>
+                    <path d={d} className="fill-none stroke-[#5b4a3a]" strokeWidth="28" strokeLinecap="round" />
+                    <path d={d} className="fill-none stroke-[#475569]" strokeWidth="22" strokeLinecap="round" />
+                  </g>
+                ))}
 
                 {segments.map((segment) => {
                   const path = ROAD_PATHS[segment.id];
                   const meta = SEGMENT_META[segment.id];
                   if (!path) return null;
-                  const textX = segment.id === 'TL_00->TL_10' ? 142 : segment.id === 'TL_10->TL_11' ? 260 : 250;
-                  const textY = segment.id === 'TL_00->TL_10' ? 214 : segment.id === 'TL_10->TL_11' ? 344 : 188;
+                  // Label position: midpoint of the path with a small offset.
+                  const labelPos = {
+                    'TL_00->TL_01': { x: 280, y: 84 },
+                    'TL_01->TL_11': { x: 436, y: 210 },
+                    'TL_10->TL_11': { x: 280, y: 340 },
+                    'TL_00->TL_10': { x: 110, y: 210 },
+                  }[segment.id] || { x: 280, y: 220 };
                   return (
                     <g key={segment.id}>
                       <path d={path} className="fill-none stroke-[#5b4a3a]" strokeWidth="32" strokeLinecap="round" strokeLinejoin="round" />
                       <path d={path} className="fill-none stroke-[#334155]" strokeWidth="25" strokeLinecap="round" strokeLinejoin="round" />
                       <path d={path} className={`fill-none ${SEGMENT_STROKE[segment.congestion_level]}`} strokeWidth="9" strokeLinecap="round" strokeLinejoin="round" />
-                      <text x={textX} y={textY} className="fill-slate-900 text-[11px] font-semibold">
+                      <text x={labelPos.x} y={labelPos.y} className="fill-slate-900 text-[11px] font-semibold">
                         {meta?.short ?? segment.id}
                       </text>
-                      <text x={textX} y={textY + 16} className="fill-slate-500 text-[10px]">
+                      <text x={labelPos.x} y={labelPos.y + 16} className="fill-slate-500 text-[10px]">
                         {segment.vehicles_in_transit} vehicles
                       </text>
                     </g>

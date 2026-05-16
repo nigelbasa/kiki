@@ -3,77 +3,61 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Billboard, OrbitControls, RoundedBox, Text } from '@react-three/drei';
 import * as THREE from 'three';
 
+// 4-junction rectangle. Coordinates match the SUMO network: x→x (east),
+// z→sumo_y (south). Square 100m × 100m centred at (50, 0, 50).
 const INTERSECTIONS = {
-  TL_00: { x: 0, z: 0 },
-  TL_10: { x: 0, z: 72 },
-  TL_11: { x: 150, z: 72 },
+  TL_00: { x: 0,   z: 0   },   // NW corner
+  TL_01: { x: 100, z: 0   },   // NE corner
+  TL_10: { x: 0,   z: 100 },   // SW corner
+  TL_11: { x: 100, z: 100 },   // SE corner
 };
 
-function relativePoints(points, center) {
-  return points.map(([x, z]) => [x - center.x, z - center.z]);
-}
+const RECT_CENTER = { x: 50, z: 50 };
 
-const ROAD_PATHS = [
-  {
-    key: 'vertical_network',
-    points: [
-      [0, -90],
-      [0, 162],
-    ],
-  },
-  {
-    key: 'borrowdale_network',
-    points: [
-      [-90, 72],
-      [240, 72],
-    ],
-  },
-  {
-    key: 'samora_network',
-    points: [
-      [-90, 0],
-      [0, 0],
-      [150, 72],
-    ],
-  },
-  {
-    key: 'tl11_south_arm',
-    points: [
-      [150, 72],
-      [150, 162],
-    ],
-  },
+// Generic square junction pad. Used at all four corners — the rectangle is
+// symmetric so the same shape works everywhere (translated by the corner pos).
+const JUNCTION_HALF = 9.2;
+const SQUARE_JUNCTION_SHAPE = [
+  [-JUNCTION_HALF, -JUNCTION_HALF],
+  [ JUNCTION_HALF, -JUNCTION_HALF],
+  [ JUNCTION_HALF,  JUNCTION_HALF],
+  [-JUNCTION_HALF,  JUNCTION_HALF],
 ];
 
-const JUNCTION_SHAPES = {
-  TL_00: relativePoints([
-    [-3.2, -7.2], [3.2, -7.2], [3.91, -3.98], [4.79, -2.55], [6.03, -1.23], [7.63, -0.03],
-    [9.58, 1.05], [6.81, 6.82], [4.8, 6.3], [4.1, 6.52], [3.6, 7.06], [3.3, 7.91],
-    [3.2, 9.09], [-3.2, 9.09], [-3.64, 5.82], [-4.2, 4.67], [-4.98, 3.85], [-5.98, 3.36],
-    [-7.2, 3.2], [-7.2, -3.2], [-4.98, -3.64], [-4.2, -4.2], [-3.64, -4.98], [-3.31, -5.98],
-  ], INTERSECTIONS.TL_00),
-  TL_10: relativePoints([
-    [-3.2, 64.8], [3.2, 64.8], [3.64, 67.02], [4.2, 67.8], [4.98, 68.36], [5.98, 68.69],
-    [7.2, 68.8], [7.2, 75.2], [4.98, 75.64], [4.2, 76.2], [3.64, 76.98], [3.31, 77.98],
-    [3.2, 79.2], [-3.2, 79.2], [-3.64, 76.98], [-4.2, 76.2], [-4.98, 75.64], [-5.98, 75.31],
-    [-7.2, 75.2], [-7.2, 68.8], [-4.98, 68.36], [-4.2, 67.8], [-3.64, 67.02], [-3.31, 66.02],
-  ], INTERSECTIONS.TL_10),
-  TL_11: relativePoints([
-    [157.2, 68.8], [157.2, 75.2], [154.98, 75.64], [154.2, 76.2], [153.64, 76.98], [153.31, 77.98],
-    [153.2, 79.2], [146.8, 79.2], [145.15, 76.98], [143.08, 76.2], [140.19, 75.64], [136.48, 75.31],
-    [131.94, 75.2], [131.94, 68.8], [132.33, 67.07], [135.1, 61.3], [139.58, 63.61], [142.91, 65.49],
-    [145.72, 66.94], [148.62, 67.98], [152.24, 68.6],
-  ], INTERSECTIONS.TL_11),
-};
+// Perimeter edges (between corners) + outward stubs (50m from each corner's
+// two free sides). Each polyline is rendered as a road in the canvas.
+const STUB_LENGTH = 50;
+const ROAD_PATHS = [
+  // Perimeter
+  { key: 'perim_top',    points: [[0,   0  ], [100, 0  ]] },
+  { key: 'perim_right',  points: [[100, 0  ], [100, 100]] },
+  { key: 'perim_bottom', points: [[100, 100], [0,   100]] },
+  { key: 'perim_left',   points: [[0,   100], [0,   0  ]] },
+  // TL_00 (NW) outward stubs
+  { key: 'stub_NW_N', points: [[0,   0  ], [0,   -STUB_LENGTH]] },
+  { key: 'stub_NW_W', points: [[0,   0  ], [-STUB_LENGTH, 0  ]] },
+  // TL_01 (NE) outward stubs
+  { key: 'stub_NE_N', points: [[100, 0  ], [100, -STUB_LENGTH]] },
+  { key: 'stub_NE_E', points: [[100, 0  ], [100 + STUB_LENGTH, 0]] },
+  // TL_10 (SW) outward stubs
+  { key: 'stub_SW_S', points: [[0,   100], [0,   100 + STUB_LENGTH]] },
+  { key: 'stub_SW_W', points: [[0,   100], [-STUB_LENGTH, 100]] },
+  // TL_11 (SE) outward stubs
+  { key: 'stub_SE_S', points: [[100, 100], [100, 100 + STUB_LENGTH]] },
+  { key: 'stub_SE_E', points: [[100, 100], [100 + STUB_LENGTH, 100]] },
+];
 
+// Camera presets — overview centres on the rectangle from south-elevated
+// isometric. Per-junction presets bring the camera close enough to read each
+// signal head while keeping the rest of the network visible.
 const FOCUS_POINTS = {
-  overview: { camera: [92, 148, 196], target: [64, 0, 42] },
-  TL_00: { camera: [18, 42, 42], target: [0, 0, 0] },
-  TL_10: { camera: [18, 42, 116], target: [0, 0, 72] },
-  TL_11: { camera: [176, 42, 116], target: [150, 0, 72] },
+  overview: { camera: [50, 130, 220], target: [RECT_CENTER.x, 0, RECT_CENTER.z] },
+  TL_00: { camera: [-30, 38, -30],  target: [0,   0, 0  ] },
+  TL_01: { camera: [130, 38, -30],  target: [100, 0, 0  ] },
+  TL_10: { camera: [-30, 38, 130],  target: [0,   0, 100] },
+  TL_11: { camera: [130, 38, 130],  target: [100, 0, 100] },
 };
 
-const INTERSECTION_PAD = 12;
 const ROAD_WIDTH = 7.4;
 const ROAD_SHOULDER = 0.9;
 const LANE_MARK_WIDTH = 0.22;
@@ -178,17 +162,17 @@ function RoadPolyline({ points, width = ROAD_WIDTH }) {
 function Ground() {
   return (
     <group>
-      <mesh position={[64, -0.08, 36]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <planeGeometry args={[520, 520]} />
+      <mesh position={[RECT_CENTER.x, -0.08, RECT_CENTER.z]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <planeGeometry args={[360, 360]} />
         <meshStandardMaterial color="#4d7c0f" roughness={0.95} />
       </mesh>
       {[
-        [8, 0, -30],
-        [70, 0, -24],
-        [-24, 0, 54],
-        [122, 0, 88],
-        [98, 0, 4],
-        [24, 0, 112],
+        [-20, 0, -30],
+        [120, 0, -30],
+        [-30, 0, 130],
+        [130, 0, 130],
+        [50, 0, -40],
+        [50, 0, 140],
       ].map((entry, index) => (
         <mesh key={index} position={entry} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
           <circleGeometry args={[14 + (index % 3) * 3, 24]} />
@@ -226,39 +210,31 @@ function IntersectionPad({ id, pos, state }) {
     return out;
   }, [state]);
 
+  const nsCountdown = state?.approaches?.find((entry) => entry.direction === 'NS')?.countdown ?? 0;
+  const ewCountdown = state?.approaches?.find((entry) => entry.direction === 'EW')?.countdown ?? 0;
+
+  // Place one signal head on each of the four stop-bar corners of the junction.
+  // The lamp face is billboarded toward the camera so all four are readable.
+  const SIGNAL_OFFSET = JUNCTION_HALF + 1.6;
+  const SIGNAL_INSET = ROAD_WIDTH * 0.42;
+
   return (
     <group position={[pos.x, 0, pos.z]}>
-      <JunctionSurface points={JUNCTION_SHAPES[id]} />
+      <JunctionSurface points={SQUARE_JUNCTION_SHAPE} />
 
-      <SignalHead3D
-        pos={[-ROAD_WIDTH * 0.28, 1.9, -INTERSECTION_PAD / 2 - 2.8]}
-        rotation={[0, 0, 0]}
-        phase={phases.NS}
-        countdown={state?.approaches?.find((entry) => entry.direction === 'NS')?.countdown ?? 0}
-      />
-      <SignalHead3D
-        pos={[ROAD_WIDTH * 0.28, 1.9, INTERSECTION_PAD / 2 + 2.8]}
-        rotation={[0, Math.PI, 0]}
-        phase={phases.NS}
-        countdown={state?.approaches?.find((entry) => entry.direction === 'NS')?.countdown ?? 0}
-      />
-      <SignalHead3D
-        pos={[-INTERSECTION_PAD / 2 - 2.8, 1.9, ROAD_WIDTH * 0.28]}
-        rotation={[0, Math.PI / 2, 0]}
-        phase={phases.EW}
-        countdown={state?.approaches?.find((entry) => entry.direction === 'EW')?.countdown ?? 0}
-      />
-      <SignalHead3D
-        pos={[INTERSECTION_PAD / 2 + 2.8, 1.9, -ROAD_WIDTH * 0.28]}
-        rotation={[0, -Math.PI / 2, 0]}
-        phase={phases.EW}
-        countdown={state?.approaches?.find((entry) => entry.direction === 'EW')?.countdown ?? 0}
-      />
+      {/* North approach signal: post at NW corner of the junction pad */}
+      <SignalHead3D pos={[-SIGNAL_INSET, 1.9, -SIGNAL_OFFSET]} phase={phases.NS} countdown={nsCountdown} />
+      {/* South approach signal: post at SE corner of the junction pad */}
+      <SignalHead3D pos={[ SIGNAL_INSET, 1.9,  SIGNAL_OFFSET]} phase={phases.NS} countdown={nsCountdown} />
+      {/* West approach signal: post at SW corner of the junction pad */}
+      <SignalHead3D pos={[-SIGNAL_OFFSET, 1.9,  SIGNAL_INSET]} phase={phases.EW} countdown={ewCountdown} />
+      {/* East approach signal: post at NE corner of the junction pad */}
+      <SignalHead3D pos={[ SIGNAL_OFFSET, 1.9, -SIGNAL_INSET]} phase={phases.EW} countdown={ewCountdown} />
 
       <Text
-        position={[0, 0.4, INTERSECTION_PAD * 0.95]}
+        position={[0, 0.4, JUNCTION_HALF * 0.85]}
         rotation={[-Math.PI / 2, 0, 0]}
-        fontSize={1.55}
+        fontSize={1.7}
         color="#e2e8f0"
         anchorX="center"
         anchorY="middle"
@@ -268,7 +244,7 @@ function IntersectionPad({ id, pos, state }) {
 
       {state?.spillback_active && (
         <mesh position={[0, 0.42, 0]} rotation={[Math.PI / 2, 0, 0]}>
-          <ringGeometry args={[INTERSECTION_PAD * 0.72, INTERSECTION_PAD * 0.84, 32]} />
+          <ringGeometry args={[JUNCTION_HALF * 0.85, JUNCTION_HALF * 1.0, 32]} />
           <meshBasicMaterial color="#fb923c" />
         </mesh>
       )}
@@ -277,48 +253,46 @@ function IntersectionPad({ id, pos, state }) {
   );
 }
 
-function SignalLamp({ y, active, color }) {
-  return (
-    <group position={[0, y, 0.22]}>
-      <mesh castShadow>
-        <cylinderGeometry args={[0.2, 0.2, 0.16, 16]} />
-        <meshStandardMaterial
-          color={active ? color : '#111827'}
-          emissive={active ? color : '#000000'}
-          emissiveIntensity={active ? 1.6 : 0}
-        />
-      </mesh>
-    </group>
-  );
-}
-
-function SignalHead3D({ pos, rotation, phase, countdown }) {
+function SignalHead3D({ pos, phase, countdown }) {
   const lights = [
-    { y: 0.52, key: 'red', color: SIGNAL_COLORS.red },
+    { y: 0.62, key: 'red', color: SIGNAL_COLORS.red },
     { y: 0, key: 'amber', color: SIGNAL_COLORS.amber },
-    { y: -0.52, key: 'green', color: SIGNAL_COLORS.green },
+    { y: -0.62, key: 'green', color: SIGNAL_COLORS.green },
   ];
 
   return (
-    <group position={pos} rotation={rotation}>
-      <mesh castShadow receiveShadow position={[0, 0.1, 0]}>
-        <boxGeometry args={[0.82, 1.72, 0.42]} />
-        <meshStandardMaterial color="#111827" />
-      </mesh>
+    <group position={pos}>
+      {/* Mast pole, planted in the ground beside the stop bar */}
       <mesh castShadow position={[0, -1.18, 0]}>
-        <cylinderGeometry args={[0.08, 0.08, 1.2, 10]} />
-        <meshStandardMaterial color="#0f172a" />
+        <cylinderGeometry args={[0.1, 0.1, 2.6, 10]} />
+        <meshStandardMaterial color="#1f2937" />
       </mesh>
-      {lights.map((light) => (
-        <SignalLamp key={light.key} y={light.y} active={phase === light.key} color={light.color} />
-      ))}
-      <Billboard position={[1.7, 0.18, 0]}>
+      {/* Lamp head — billboarded so the lit face always points at the viewer.
+          This makes the active signal colour readable from any orbit angle. */}
+      <Billboard position={[0, 0.15, 0]}>
+        <mesh castShadow receiveShadow>
+          <boxGeometry args={[1.05, 2.0, 0.45]} />
+          <meshStandardMaterial color="#0b1220" />
+        </mesh>
+        {lights.map((light) => (
+          <group key={light.key} position={[0, light.y, 0.24]}>
+            <mesh castShadow>
+              <cylinderGeometry args={[0.26, 0.26, 0.18, 20]} />
+              <meshStandardMaterial
+                color={phase === light.key ? light.color : '#1f2937'}
+                emissive={phase === light.key ? light.color : '#000000'}
+                emissiveIntensity={phase === light.key ? 1.9 : 0}
+              />
+            </mesh>
+          </group>
+        ))}
         <Text
-          fontSize={1.18}
+          position={[1.45, 0.05, 0.3]}
+          fontSize={1.05}
           color="#f8fafc"
           anchorX="left"
           anchorY="middle"
-          outlineWidth={0.05}
+          outlineWidth={0.06}
           outlineColor="#020617"
         >
           {String(Math.max(0, countdown))}
@@ -335,7 +309,7 @@ function EmergencyRing() {
   });
   return (
     <mesh ref={ref} position={[0, 0.52, 0]} rotation={[Math.PI / 2, 0, 0]}>
-      <torusGeometry args={[INTERSECTION_PAD * 0.8, 0.16, 12, 32]} />
+      <torusGeometry args={[JUNCTION_HALF * 1.1, 0.16, 12, 32]} />
       <meshStandardMaterial color="#f87171" emissive="#f87171" emissiveIntensity={1.1} />
     </mesh>
   );
@@ -585,9 +559,10 @@ export default function SimulationCanvas3D({ state }) {
       <div className="absolute left-4 top-4 z-10 flex flex-wrap gap-2">
         {[
           ['overview', 'Overview'],
-          ['TL_00', 'TL_00'],
-          ['TL_10', 'TL_10'],
-          ['TL_11', 'TL_11'],
+          ['TL_00', 'NW (TL_00)'],
+          ['TL_01', 'NE (TL_01)'],
+          ['TL_10', 'SW (TL_10)'],
+          ['TL_11', 'SE (TL_11)'],
         ].map(([id, label]) => (
           <button
             key={id}

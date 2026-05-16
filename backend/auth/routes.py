@@ -36,14 +36,12 @@ def _set_portal_cookie(response: Response, cookie_name: str, token: str) -> None
 
 @router.post("/admin/login", response_model=LoginResponse)
 async def admin_login(body: LoginRequest, response: Response) -> LoginResponse:
-    token = store.authenticate(body.username, body.password)
-    if token is None:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    user = store.get_user(body.username)
+    user = store.verify_credentials(body.username, body.password)
     if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin accounts only")
+    token = store.create_session(user.username)
     _set_portal_cookie(response, ADMIN_COOKIE_NAME, token)
     return LoginResponse(
         username=user.username, display_name=user.display_name, role=user.role
@@ -52,14 +50,12 @@ async def admin_login(body: LoginRequest, response: Response) -> LoginResponse:
 
 @router.post("/public/login", response_model=LoginResponse)
 async def public_login(body: LoginRequest, response: Response) -> LoginResponse:
-    token = store.authenticate(body.username, body.password)
-    if token is None:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    user = store.get_user(body.username)
+    user = store.verify_credentials(body.username, body.password)
     if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     if user.role != "public":
         raise HTTPException(status_code=403, detail="Public accounts only")
+    token = store.create_session(user.username)
     _set_portal_cookie(response, PUBLIC_COOKIE_NAME, token)
     return LoginResponse(
         username=user.username, display_name=user.display_name, role=user.role

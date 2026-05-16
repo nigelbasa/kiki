@@ -10,3 +10,7 @@ rwendo_uploads/
 rwendo_outputs/
 .codex-logs/
 .claude/
+
+# Local-only spec materials and unpacked-doc scratch dirs
+new.docx
+new_unpacked/

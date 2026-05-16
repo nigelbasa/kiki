@@ -9,7 +9,7 @@ export default function LoginCard({ heading, subheading, onSubmit, error }) {
     e.preventDefault();
     setBusy(true);
     try {
-      await onSubmit(username, password);
+      await onSubmit(username.trim(), password);
     } finally {
       setBusy(false);
     }

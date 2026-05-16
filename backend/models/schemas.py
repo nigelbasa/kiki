@@ -142,7 +142,7 @@ class SimulationTickState(BaseModel):
 
 
 class SimulationControlCommand(BaseModel):
-    action: Literal["start_run", "pause", "resume", "reset", "set_mode", "set_scenario", "set_network_mode"]
+    action: Literal["start_run", "pause", "resume", "reset", "stop_run", "set_mode", "set_scenario", "set_network_mode"]
     intersection_id: Optional[str] = None
     mode: Optional[SignalMode] = None
     scenario: Optional[str] = None
@@ -222,6 +222,7 @@ class RunSummary(BaseModel):
     duration_ticks: int
     avg_wait_time_adaptive: float
     avg_wait_time_fixed: float
+    avg_queue_length: float = 0.0
     total_wait_seconds: float = 0.0
     throughput_per_min: float = 0.0
     avg_congestion: float = 0.0

@@ -33,6 +33,8 @@ def build_router(engine) -> APIRouter:
             engine.resume()
         elif cmd.action == "reset":
             engine.reset()
+        elif cmd.action == "stop_run":
+            engine.stop_run()
         elif cmd.action == "set_mode" and cmd.intersection_id and cmd.mode is not None:
             engine.set_mode(cmd.intersection_id, cmd.mode)
         elif cmd.action == "set_network_mode" and cmd.mode is not None:
@@ -45,6 +47,11 @@ def build_router(engine) -> APIRouter:
     async def post_preempt(cmd: PreemptCommand, _=Depends(require_admin)) -> dict:
         engine.trigger_preemption(cmd.intersection_id, cmd.approach)
         return {"ok": True, "intersection_id": cmd.intersection_id, "approach": cmd.approach}
+
+    @router.post("/spawn_emergency_random")
+    async def spawn_random_emergency(_=Depends(require_admin)) -> dict:
+        target = engine.spawn_random_emergency()
+        return {"ok": True, **target}
 
     @router.get("/config")
     async def get_config(_=Depends(require_any_auth)) -> dict:

@@ -41,23 +41,32 @@ from models.schemas import (  # noqa: E402
 SUMO_CFG = os.path.join(os.path.dirname(__file__), "..", "sumo", "rwendo.sumocfg")
 
 INTERSECTIONS = {
-    "TL_00": "Samora Machel Ave x Julius Nyerere Way",
-    "TL_10": "Harare Drive x Borrowdale Road",
-    "TL_11": "Eastern Gateway Junction",
+    "TL_00": "NW Corner — Samora Machel x Nyerere",
+    "TL_01": "NE Corner — Harare Drive x Nyerere",
+    "TL_10": "SW Corner — Samora Machel x Borrowdale",
+    "TL_11": "SE Corner — Harare Drive x Borrowdale",
 }
 
+# Each junction has 4 inbound approaches grouped into NS (N+S) and EW (E+W).
+# Perimeter neighbours: TL_00<->TL_01 (top), TL_01<->TL_11 (right),
+# TL_10<->TL_11 (bottom), TL_00<->TL_10 (left). External stubs supply the
+# remaining direction at each corner.
 APPROACHES: dict[str, dict[str, list[str]]] = {
     "TL_00": {
         "NS": ["EXT_TL00_N__TL_00", "TL_10__TL_00"],
-        "EW": ["EXT_TL00_W__TL_00", "TL_11__TL_00"],
+        "EW": ["EXT_TL00_W__TL_00", "TL_01__TL_00"],
+    },
+    "TL_01": {
+        "NS": ["EXT_TL01_N__TL_01", "TL_11__TL_01"],
+        "EW": ["EXT_TL01_E__TL_01", "TL_00__TL_01"],
     },
     "TL_10": {
         "NS": ["TL_00__TL_10", "EXT_TL10_S__TL_10"],
         "EW": ["EXT_TL10_W__TL_10", "TL_11__TL_10"],
     },
     "TL_11": {
-        "NS": ["EXT_TL11_S__TL_11", "TL_00__TL_11"],
-        "EW": ["EXT_TL11_E__TL_11", "TL_10__TL_11"],
+        "NS": ["TL_01__TL_11", "EXT_TL11_S__TL_11"],
+        "EW": ["TL_10__TL_11", "EXT_TL11_E__TL_11"],
     },
 }
 
@@ -68,61 +77,48 @@ APPROACH_EDGE_TO_JUNCTION: dict[str, tuple[str, str]] = {
     for edge_id in edge_ids
 }
 
+# Perimeter segments — each is one side of the rectangle (bidirectional pair).
 SEGMENTS: list[tuple[str, str, str]] = [
-    ("TL_00->TL_10", "TL_00__TL_10", "TL_10__TL_00"),
+    ("TL_00->TL_01", "TL_00__TL_01", "TL_01__TL_00"),
+    ("TL_01->TL_11", "TL_01__TL_11", "TL_11__TL_01"),
     ("TL_10->TL_11", "TL_10__TL_11", "TL_11__TL_10"),
-    ("TL_00->TL_11", "TL_00__TL_11", "TL_11__TL_00"),
+    ("TL_00->TL_10", "TL_00__TL_10", "TL_10__TL_00"),
 ]
 
+# Every external entry can leave at any of the other 7 external stubs. SUMO
+# computes the shortest route around the perimeter; vehicles never reuse the
+# same external stub they entered from.
+_EXTERNAL_EXITS = [
+    "TL_00__EXT_TL00_N", "TL_00__EXT_TL00_W",
+    "TL_01__EXT_TL01_N", "TL_01__EXT_TL01_E",
+    "TL_10__EXT_TL10_S", "TL_10__EXT_TL10_W",
+    "TL_11__EXT_TL11_S", "TL_11__EXT_TL11_E",
+]
+
+
+def _exits_excluding(entry_edge: str) -> list[str]:
+    # An entry like "EXT_TL00_N__TL_00" pairs with the exit "TL_00__EXT_TL00_N".
+    ext_node, _ = entry_edge.split("__")
+    same_corner_exit = f"{entry_edge.split('__')[1]}__{ext_node}"
+    return [exit_id for exit_id in _EXTERNAL_EXITS if exit_id != same_corner_exit]
+
+
 SPAWN_ENTRIES: dict[str, list[str]] = {
-    "EXT_TL00_N__TL_00": ["TL_10__EXT_TL10_S", "TL_11__EXT_TL11_E", "TL_00__EXT_TL00_W"],
-    "EXT_TL00_W__TL_00": ["TL_11__EXT_TL11_E", "TL_10__EXT_TL10_S"],
-    "EXT_TL10_S__TL_10": ["TL_00__EXT_TL00_N", "TL_00__EXT_TL00_W", "TL_11__EXT_TL11_E"],
-    "EXT_TL10_W__TL_10": ["TL_00__EXT_TL00_N", "TL_11__EXT_TL11_E"],
-    "EXT_TL11_E__TL_11": ["TL_10__EXT_TL10_S", "TL_00__EXT_TL00_W", "TL_10__EXT_TL10_W"],
-    "EXT_TL11_S__TL_11": ["TL_00__EXT_TL00_W", "TL_10__EXT_TL10_S"],
+    entry_edge: _exits_excluding(entry_edge)
+    for entry_edge in (
+        "EXT_TL00_N__TL_00", "EXT_TL00_W__TL_00",
+        "EXT_TL01_N__TL_01", "EXT_TL01_E__TL_01",
+        "EXT_TL10_S__TL_10", "EXT_TL10_W__TL_10",
+        "EXT_TL11_S__TL_11", "EXT_TL11_E__TL_11",
+    )
 }
 
 VEHICLE_TYPES = ["car", "truck", "bus", "motorcycle", "ambulance"]
 VEHICLE_WEIGHTS = [0.72, 0.08, 0.07, 0.11, 0.02]
-LANE_HINTS: dict[tuple[str, str], tuple[int, ...]] = {
-    ("EXT_TL00_N__TL_00", "TL_00__EXT_TL00_W"): (0,),
-    ("EXT_TL00_N__TL_00", "TL_00__TL_10"): (0, 1),
-    ("EXT_TL00_N__TL_00", "TL_00__TL_11"): (1,),
-    ("EXT_TL00_W__TL_00", "TL_00__TL_10"): (0,),
-    ("EXT_TL00_W__TL_00", "TL_00__TL_11"): (0, 1),
-    ("EXT_TL00_W__TL_00", "TL_00__EXT_TL00_N"): (1,),
-    ("TL_10__TL_00", "TL_00__TL_11"): (0,),
-    ("TL_10__TL_00", "TL_00__EXT_TL00_N"): (0, 1),
-    ("TL_10__TL_00", "TL_00__EXT_TL00_W"): (1,),
-    ("TL_11__TL_00", "TL_00__EXT_TL00_N"): (0,),
-    ("TL_11__TL_00", "TL_00__EXT_TL00_W"): (0, 1),
-    ("TL_11__TL_00", "TL_00__TL_10"): (1,),
-    ("EXT_TL10_S__TL_10", "TL_10__TL_11"): (0,),
-    ("EXT_TL10_S__TL_10", "TL_10__TL_00"): (0, 1),
-    ("EXT_TL10_S__TL_10", "TL_10__EXT_TL10_W"): (1,),
-    ("EXT_TL10_W__TL_10", "TL_10__EXT_TL10_S"): (0,),
-    ("EXT_TL10_W__TL_10", "TL_10__TL_11"): (0, 1),
-    ("EXT_TL10_W__TL_10", "TL_10__TL_00"): (1,),
-    ("TL_00__TL_10", "TL_10__EXT_TL10_W"): (0,),
-    ("TL_00__TL_10", "TL_10__EXT_TL10_S"): (0, 1),
-    ("TL_00__TL_10", "TL_10__TL_11"): (1,),
-    ("TL_11__TL_10", "TL_10__TL_00"): (0,),
-    ("TL_11__TL_10", "TL_10__EXT_TL10_W"): (0, 1),
-    ("TL_11__TL_10", "TL_10__EXT_TL10_S"): (1,),
-    ("EXT_TL11_E__TL_11", "TL_11__TL_00"): (0,),
-    ("EXT_TL11_E__TL_11", "TL_11__TL_10"): (0, 1),
-    ("EXT_TL11_E__TL_11", "TL_11__EXT_TL11_S"): (1,),
-    ("EXT_TL11_S__TL_11", "TL_11__EXT_TL11_E"): (0,),
-    ("EXT_TL11_S__TL_11", "TL_11__TL_00"): (0, 1),
-    ("EXT_TL11_S__TL_11", "TL_11__TL_10"): (1,),
-    ("TL_10__TL_11", "TL_11__EXT_TL11_S"): (0,),
-    ("TL_10__TL_11", "TL_11__EXT_TL11_E"): (0, 1),
-    ("TL_10__TL_11", "TL_11__TL_00"): (1,),
-    ("TL_00__TL_11", "TL_11__TL_10"): (0,),
-    ("TL_00__TL_11", "TL_11__EXT_TL11_S"): (0,),
-    ("TL_00__TL_11", "TL_11__EXT_TL11_E"): (0, 1),
-}
+
+# Lane hints are intentionally minimal for the rectangle layout — SUMO's
+# default lane-change behaviour handles the symmetric 2-lane perimeter cleanly.
+LANE_HINTS: dict[tuple[str, str], tuple[int, ...]] = {}
 
 
 def _step_length() -> float:
@@ -173,27 +169,17 @@ class PhasePlan:
     queue_edges: tuple[str, ...] = ()
 
 
+# All four corners are now identical 4-way junctions with the SUMO default
+# phase order: 0=NS green, 1=NS amber, 2=EW green, 3=EW amber.
 PHASE_PLAN_MAP: dict[str, dict[str, PhasePlan]] = {
-    "TL_00": {
-        "NS": PhasePlan("NS", "NS", 0, amber_phase=1, queue_edges=("EXT_TL00_N__TL_00", "TL_10__TL_00")),
-        "EW": PhasePlan("EW", "EW", 2, amber_phase=3, queue_edges=("EXT_TL00_W__TL_00", "TL_11__TL_00")),
-    },
-    "TL_10": {
-        "NS": PhasePlan("NS", "NS", 0, amber_phase=1, queue_edges=("TL_00__TL_10", "EXT_TL10_S__TL_10")),
-        "EW": PhasePlan("EW", "EW", 2, amber_phase=3, queue_edges=("EXT_TL10_W__TL_10", "TL_11__TL_10")),
-    },
-    "TL_11": {
-        "EW": PhasePlan("EW", "EW", 0, amber_phase=1, clearance_phase=2, queue_edges=("EXT_TL11_E__TL_11", "TL_10__TL_11")),
-        "NS_CURVE": PhasePlan("NS_CURVE", "NS", 3, amber_phase=4, clearance_phase=5, queue_edges=("TL_00__TL_11",)),
-        "NS_SOUTH": PhasePlan("NS_SOUTH", "NS", 6, amber_phase=7, clearance_phase=8, queue_edges=("EXT_TL11_S__TL_11",)),
-    },
+    tl_id: {
+        "NS": PhasePlan("NS", "NS", 0, amber_phase=1, queue_edges=tuple(APPROACHES[tl_id]["NS"])),
+        "EW": PhasePlan("EW", "EW", 2, amber_phase=3, queue_edges=tuple(APPROACHES[tl_id]["EW"])),
+    }
+    for tl_id in INTERSECTIONS
 }
 
-FIXED_SEQUENCES: dict[str, list[str]] = {
-    "TL_00": ["NS", "EW"],
-    "TL_10": ["NS", "EW"],
-    "TL_11": ["EW", "NS_CURVE", "NS_SOUTH"],
-}
+FIXED_SEQUENCES: dict[str, list[str]] = {tl_id: ["NS", "EW"] for tl_id in INTERSECTIONS}
 
 
 @dataclass
@@ -215,7 +201,6 @@ class _Ctl:
     last_selected_group: str = "EW"
     pending_priority_group: Optional[str] = None
     stage_elapsed: float = 0.0
-    last_tl11_ns_plan: str = "NS_SOUTH"
 
     def set_mode(self, mode: SignalMode) -> None:
         self.mode = mode
@@ -527,13 +512,7 @@ class SumoNetwork:
     def _plan_for_preemption(self, ctl: _Ctl) -> str:
         if ctl.emergency_plan_id:
             return ctl.emergency_plan_id
-        if ctl.id != "TL_11":
-            return ctl.emergency_approach or "NS"
-        south_q = self._edge_halts("EXT_TL11_S__TL_11")
-        curve_q = self._edge_halts("TL_00__TL_11")
-        if south_q >= curve_q:
-            return "NS_SOUTH"
-        return "NS_CURVE"
+        return ctl.emergency_approach or "NS"
 
     def _start_amber_or_clearance(self, ctl: _Ctl) -> None:
         plan = PHASE_PLAN_MAP[ctl.id][ctl.current_plan_id]
@@ -577,8 +556,6 @@ class SumoNetwork:
         ctl.just_started = False
         ctl.pending_priority_group = None
         ctl.stage_elapsed = 0.0
-        if ctl.id == "TL_11" and plan_id.startswith("NS_"):
-            ctl.last_tl11_ns_plan = plan_id
 
     def _apply_adaptive_green_adjustments(self, ctl: _Ctl) -> None:
         if ctl.current_plan_id == "":
@@ -623,19 +600,12 @@ class SumoNetwork:
     def _select_next_plan(self, ctl: _Ctl) -> str:
         if ctl.mode == SignalMode.FIXED:
             ctl.sequence_index = (ctl.sequence_index + 1) % len(FIXED_SEQUENCES[ctl.id])
-            next_plan_id = FIXED_SEQUENCES[ctl.id][ctl.sequence_index]
-            if ctl.id == "TL_11" and next_plan_id.startswith("NS_"):
-                return self._select_tl11_ns_plan(ctl, fallback=next_plan_id)
-            return next_plan_id
+            return FIXED_SEQUENCES[ctl.id][ctl.sequence_index]
 
-        if ctl.pending_priority_group == "NS":
+        if ctl.pending_priority_group in ("NS", "EW"):
+            group = ctl.pending_priority_group
             ctl.pending_priority_group = None
-            if ctl.id == "TL_11":
-                return self._select_tl11_ns_plan(ctl)
-            return "NS"
-        if ctl.pending_priority_group == "EW":
-            ctl.pending_priority_group = None
-            return "EW"
+            return group
 
         ns_queue = self._approach_detection_score(ctl.id, "NS")
         ew_queue = self._approach_detection_score(ctl.id, "EW")
@@ -646,50 +616,33 @@ class SumoNetwork:
             ew_queue *= 0.72
 
         if abs(ns_queue - ew_queue) <= 0.8:
-            selected_group = "EW" if ctl.last_selected_group == "NS" else "NS"
-        else:
-            selected_group = "NS" if ns_queue > ew_queue else "EW"
+            return "EW" if ctl.last_selected_group == "NS" else "NS"
+        return "NS" if ns_queue > ew_queue else "EW"
 
-        if ctl.id != "TL_11":
-            return selected_group
-
-        if selected_group == "EW":
-            return "EW"
-
-        return self._select_tl11_ns_plan(ctl)
-
-    def _select_tl11_ns_plan(self, ctl: _Ctl, fallback: Optional[str] = None) -> str:
-        south_score = self._edge_detection_score("EXT_TL11_S__TL_11")
-        curve_score = self._edge_detection_score("TL_00__TL_11")
-        preferred = "NS_SOUTH" if south_score > curve_score else "NS_CURVE"
-        if abs(south_score - curve_score) <= 1.2:
-            preferred = "NS_CURVE" if ctl.last_tl11_ns_plan == "NS_SOUTH" else "NS_SOUTH"
-
-        if preferred == "NS_SOUTH" and south_score <= 0.2 and curve_score > 0.2:
-            return "NS_CURVE"
-        if preferred == "NS_CURVE" and curve_score <= 0.2 and south_score > 0.2:
-            return "NS_SOUTH"
-        return preferred if preferred in PHASE_PLAN_MAP["TL_11"] else (fallback or "NS_SOUTH")
+    # Upstream perimeter neighbour for each junction-direction: if the
+    # neighbour is currently green in the matching direction and pushing a
+    # platoon at us, recommend switching to receive it.
+    _UPSTREAM_FOR_GROUP = {
+        "TL_00": {"NS": ("TL_10", "NS", "TL_10__TL_00"), "EW": ("TL_01", "EW", "TL_01__TL_00")},
+        "TL_01": {"NS": ("TL_11", "NS", "TL_11__TL_01"), "EW": ("TL_00", "EW", "TL_00__TL_01")},
+        "TL_10": {"NS": ("TL_00", "NS", "TL_00__TL_10"), "EW": ("TL_11", "EW", "TL_11__TL_10")},
+        "TL_11": {"NS": ("TL_01", "NS", "TL_01__TL_11"), "EW": ("TL_10", "EW", "TL_10__TL_11")},
+    }
 
     def _priority_group_from_upstream(self, ctl: _Ctl) -> Optional[str]:
-        if ctl.id == "TL_10":
-            upstream = self.intersections["TL_00"]
-            inbound_load = self._segment_vehicle_count("TL_00__TL_10") + self._approach_queue("TL_00", "NS")
-            if upstream.stage == "green" and upstream.current_plan_id == "NS" and inbound_load >= 3:
-                return "NS"
-            return None
-
-        if ctl.id == "TL_11":
-            tl10 = self.intersections["TL_10"]
-            load_from_tl10 = self._segment_vehicle_count("TL_10__TL_11") + self._approach_queue("TL_10", "EW")
-            if tl10.stage == "green" and tl10.current_plan_id == "EW" and load_from_tl10 >= 3:
-                return "EW"
-
-            tl00 = self.intersections["TL_00"]
-            load_from_tl00 = self._segment_vehicle_count("TL_00__TL_11") + self._approach_queue("TL_00", "EW")
-            if tl00.stage == "green" and tl00.current_plan_id == "EW" and load_from_tl00 >= 3:
-                return "NS"
-
+        for group in ("NS", "EW"):
+            upstream_id, upstream_group, upstream_edge = self._UPSTREAM_FOR_GROUP[ctl.id][group]
+            upstream = self.intersections[upstream_id]
+            inbound_load = (
+                self._segment_vehicle_count(upstream_edge)
+                + self._approach_queue(upstream_id, upstream_group)
+            )
+            if (
+                upstream.stage == "green"
+                and upstream.current_plan_id == upstream_group
+                and inbound_load >= 3
+            ):
+                return group
         return None
 
     def _green_duration_for_plan(self, ctl: _Ctl, plan_id: str) -> float:
@@ -703,14 +656,17 @@ class SumoNetwork:
         demand = sum(self._edge_sizing_demand(edge_id) for edge_id in plan.queue_edges)
         duration = min_green + min(demand * 0.9, max_green - min_green)
 
+        # Greenwave bonus: if the upstream perimeter neighbour is also flowing
+        # in the same direction, extend our green slightly to absorb the platoon.
         coordination_bonus = 0.0
-        if ctl.id == "TL_10" and plan.group == "NS":
-            coordination_bonus = min(5.0, self._segment_vehicle_count("TL_00__TL_10") * 0.45)
-        elif ctl.id == "TL_11":
-            if plan.group == "EW":
-                coordination_bonus = min(5.0, self._segment_vehicle_count("TL_10__TL_11") * 0.45)
-            else:
-                coordination_bonus = min(5.0, self._segment_vehicle_count("TL_00__TL_11") * 0.45)
+        upstream_edges = {
+            "TL_00": {"NS": "TL_10__TL_00", "EW": "TL_01__TL_00"},
+            "TL_01": {"NS": "TL_11__TL_01", "EW": "TL_00__TL_01"},
+            "TL_10": {"NS": "TL_00__TL_10", "EW": "TL_11__TL_10"},
+            "TL_11": {"NS": "TL_01__TL_11", "EW": "TL_10__TL_11"},
+        }
+        upstream_edge = upstream_edges[ctl.id][plan.group]
+        coordination_bonus = min(5.0, self._segment_vehicle_count(upstream_edge) * 0.45)
 
         spillback_cap = max_green
         if ctl.spillback_active:
@@ -718,15 +674,24 @@ class SumoNetwork:
 
         return round(max(min_green, min(spillback_cap, duration + coordination_bonus)), 2)
 
+    # Rectangle topology — each corner has two perimeter neighbours that
+    # receive its outflow. NS green pushes traffic along the vertical edge,
+    # EW green pushes along the horizontal edge.
+    _PERIMETER_NEIGHBOURS = {
+        "TL_00": {"NS": ("TL_10", "NS"), "EW": ("TL_01", "EW")},
+        "TL_01": {"NS": ("TL_11", "NS"), "EW": ("TL_00", "EW")},
+        "TL_10": {"NS": ("TL_00", "NS"), "EW": ("TL_11", "EW")},
+        "TL_11": {"NS": ("TL_01", "NS"), "EW": ("TL_10", "EW")},
+    }
+
     def _update_spillback_flag(self, ctl: _Ctl) -> None:
         ctl.spillback_active = False
         threshold = int(cfg.get("SPILLBACK_THRESHOLD"))
-        if ctl.id == "TL_00":
-            downstream = self._approach_queue("TL_10", "NS") + self._approach_queue("TL_11", "NS")
-            ctl.spillback_active = downstream > threshold
-        elif ctl.id == "TL_10":
-            downstream = self._approach_queue("TL_11", "EW") + self._approach_queue("TL_11", "NS")
-            ctl.spillback_active = downstream > threshold
+        downstream = 0
+        for direction in ("NS", "EW"):
+            neighbour_id, neighbour_group = self._PERIMETER_NEIGHBOURS[ctl.id][direction]
+            downstream += self._approach_queue(neighbour_id, neighbour_group)
+        ctl.spillback_active = downstream > threshold
 
     # ------------------------------------------------------------------ spawn
     def _spawn_vehicles(self, generator, dt: float) -> None:
@@ -769,6 +734,97 @@ class SumoNetwork:
                 self._vehicle_spawn_ticks[vehicle_id] = self.tick_count
             except traci.TraCIException:
                 pass
+
+    # --------------------------------------------------------- emergency spawn
+    def spawn_emergency_vehicle(self, intersection_id: str, approach: str) -> None:
+        """Spawn an ambulance entering `intersection_id` on the given approach.
+
+        Routed across the network to an exit on the opposite side so the
+        ambulance traverses the junction (giving the adaptive controller a
+        chance to detect and preempt). Safe to call before SUMO is connected —
+        the call is queued and re-applied once the network starts.
+        """
+        if not self._connected:
+            return
+        if intersection_id not in APPROACHES:
+            return
+        if approach not in ("NS", "EW"):
+            return
+
+        entry_edge = self._external_entry_for(intersection_id, approach)
+        if entry_edge is None:
+            return
+        exit_edge = self._opposite_exit_for(intersection_id, approach)
+        if exit_edge is None:
+            return
+
+        try:
+            route_result = traci.simulation.findRoute(entry_edge, exit_edge)
+        except traci.TraCIException:
+            return
+        route_edges = list(getattr(route_result, "edges", []) or [])
+        if len(route_edges) < 2:
+            return
+
+        route_id = f"emergency_r{self._route_counter}"
+        self._route_counter += 1
+        try:
+            traci.route.add(route_id, route_edges)
+        except traci.TraCIException:
+            return
+
+        vehicle_id = f"v{self._vehicle_counter}_ambulance"
+        self._vehicle_counter += 1
+        depart_lane = str(self._preferred_lane_for_route(route_edges))
+
+        try:
+            traci.vehicle.add(
+                vehicle_id,
+                routeID=route_id,
+                typeID="DEFAULT_VEHTYPE",
+                departLane=depart_lane,
+                arrivalLane="0",
+            )
+            traci.vehicle.setLaneChangeMode(vehicle_id, 512)
+            # Mark as priority so SUMO drives it more assertively. setSpeedFactor
+            # keeps the model speed within its normal envelope while signalling
+            # to other vehicles that this one has higher priority.
+            try:
+                traci.vehicle.setSpeedFactor(vehicle_id, 1.25)
+            except traci.TraCIException:
+                pass
+            self._vehicle_spawn_ticks[vehicle_id] = self.tick_count
+        except traci.TraCIException:
+            pass
+
+    @staticmethod
+    def _external_entry_for(intersection_id: str, approach: str) -> Optional[str]:
+        # Prefer the external stub edge among the approach's inbound edges.
+        for edge_id in APPROACHES[intersection_id][approach]:
+            if edge_id.startswith("EXT_"):
+                return edge_id
+        # Fallback: use the first approach edge (perimeter neighbour) — still
+        # a valid spawn since SUMO can route from it to the exit.
+        edges = APPROACHES[intersection_id][approach]
+        return edges[0] if edges else None
+
+    @staticmethod
+    def _opposite_exit_for(intersection_id: str, approach: str) -> Optional[str]:
+        # Choose an exit stub on the far side of the rectangle so the ambulance
+        # actually drives through this junction. Mapping: each corner has two
+        # outbound external stubs; pick the one on the opposite corner along
+        # the chosen approach axis.
+        opposite_corner = {
+            ("TL_00", "NS"): "TL_10__EXT_TL10_S",
+            ("TL_00", "EW"): "TL_01__EXT_TL01_E",
+            ("TL_01", "NS"): "TL_11__EXT_TL11_S",
+            ("TL_01", "EW"): "TL_00__EXT_TL00_W",
+            ("TL_10", "NS"): "TL_00__EXT_TL00_N",
+            ("TL_10", "EW"): "TL_11__EXT_TL11_E",
+            ("TL_11", "NS"): "TL_01__EXT_TL01_N",
+            ("TL_11", "EW"): "TL_10__EXT_TL10_W",
+        }
+        return opposite_corner.get((intersection_id, approach))
 
     def _guide_vehicles_to_valid_lanes(self) -> None:
         try:
@@ -952,17 +1008,10 @@ class SumoNetwork:
         return ready["plan_id"]
 
     def _ambulance_ready_for_preemption(self, ctl: _Ctl) -> Optional[dict]:
-        if ctl.id == "TL_11":
-            candidates = [
-                {"plan_id": "NS_SOUTH", "edges": ("EXT_TL11_S__TL_11",)},
-                {"plan_id": "NS_CURVE", "edges": ("TL_00__TL_11",)},
-                {"plan_id": "EW", "edges": ("EXT_TL11_E__TL_11", "TL_10__TL_11")},
-            ]
-        else:
-            candidates = [
-                {"plan_id": "NS", "edges": tuple(APPROACHES[ctl.id]["NS"])},
-                {"plan_id": "EW", "edges": tuple(APPROACHES[ctl.id]["EW"])},
-            ]
+        candidates = [
+            {"plan_id": "NS", "edges": tuple(APPROACHES[ctl.id]["NS"])},
+            {"plan_id": "EW", "edges": tuple(APPROACHES[ctl.id]["EW"])},
+        ]
 
         best_candidate: Optional[dict] = None
         for candidate in candidates:
@@ -1034,10 +1083,7 @@ class SumoNetwork:
         return vehicle["rank"] <= 1 and vehicle["speed"] < 2.0
 
     def _ambulance_rank_for_group(self, ctl: _Ctl, group: str) -> int:
-        if ctl.id == "TL_11" and group == "NS":
-            edges = ["EXT_TL11_S__TL_11", "TL_00__TL_11"]
-        else:
-            edges = APPROACHES[ctl.id][group]
+        edges = APPROACHES[ctl.id][group]
 
         best_rank = 999
         for edge_id in edges:
@@ -1193,6 +1239,7 @@ class SumoMetricsAccumulator:
 
     def __init__(self) -> None:
         self.total_wait_seconds = 0.0
+        self.total_queue_length = 0.0
         self.vehicles_completed = 0
         self.emergency_travel_seconds_total = 0.0
         self.emergency_vehicles_completed = 0
@@ -1207,6 +1254,7 @@ class SumoMetricsAccumulator:
         self._prev_preemption = False
         self._recent_completion_ticks: deque[int] = deque()
         self._recent_congestion_scores: deque[float] = deque()
+        self._recent_queue_lengths: deque[float] = deque()
         self._recent_green_wave_outcomes: deque[int] = deque(maxlen=180)
         self._active_vehicle_traces: dict[str, VehicleJunctionTrace] = {}
         # Sampled chart-relevant series so frontend overlays can be aligned by
@@ -1247,6 +1295,12 @@ class SumoMetricsAccumulator:
         self._recent_congestion_scores.append(congestion_score)
         while len(self._recent_congestion_scores) > window_ticks:
             self._recent_congestion_scores.popleft()
+
+        queue_length = self._queue_length(state)
+        self.total_queue_length += queue_length
+        self._recent_queue_lengths.append(queue_length)
+        while len(self._recent_queue_lengths) > window_ticks:
+            self._recent_queue_lengths.popleft()
 
         spillback = False
         for intersection in state.intersections:
@@ -1379,6 +1433,9 @@ class SumoMetricsAccumulator:
         minutes = max(self.tick_count, 1) * _step_length() / 60.0
         return round(self.vehicles_completed / minutes, 2) if minutes > 0 else 0.0
 
+    def avg_queue_length(self) -> float:
+        return round(self.total_queue_length / max(self.tick_count, 1), 2)
+
     def avg_emergency_travel_time(self) -> float:
         if self.emergency_vehicles_completed <= 0:
             return 0.0
@@ -1391,6 +1448,11 @@ class SumoMetricsAccumulator:
         if not self._recent_congestion_scores:
             return 0.0
         return round(sum(self._recent_congestion_scores) / len(self._recent_congestion_scores), 2)
+
+    def current_queue_length(self) -> float:
+        if not self._recent_queue_lengths:
+            return 0.0
+        return round(sum(self._recent_queue_lengths) / len(self._recent_queue_lengths), 2)
 
     def current_throughput_per_min(self) -> float:
         sample_seconds = max(min(self.tick_count, _rolling_window_ticks()) * _step_length(), _step_length())
@@ -1407,11 +1469,7 @@ class SumoMetricsAccumulator:
         return sum(self._recent_green_wave_outcomes) / len(self._recent_green_wave_outcomes)
 
     def _congestion_score(self, state: SimulationTickState) -> float:
-        queue_load = sum(
-            approach.queue_length
-            for intersection in state.intersections
-            for approach in intersection.approaches
-        )
+        queue_load = self._queue_length(state)
         segment_load = sum(segment.vehicles_in_transit for segment in state.segments)
         approach_count = sum(len(intersection.approaches) for intersection in state.intersections)
         segment_count = max(len(state.segments), 1)
@@ -1420,37 +1478,55 @@ class SumoMetricsAccumulator:
         normalized = (queue_load * 1.25) / max(approach_count, 1) + (segment_load * 0.7) / segment_count
         return round(normalized, 2)
 
+    @staticmethod
+    def _queue_length(state: SimulationTickState) -> float:
+        return float(sum(
+            approach.queue_length
+            for intersection in state.intersections
+            for approach in intersection.approaches
+        ))
+
+    # Every directional perimeter segment in the 4-junction rectangle.
+    # Each entry: (upstream_jct, upstream_plan_group, segment_edge, downstream_jct, downstream_plan_group).
+    # Used by green-wave detection: when upstream is on its plan_group's green
+    # and the segment carries vehicles, downstream is expected to be on the
+    # same group's green for the platoon to pass cleanly.
+    _PERIMETER_DIRECTIONAL_FLOWS: tuple = (
+        ("TL_00", "EW", "TL_00__TL_01", "TL_01", "EW"),
+        ("TL_01", "EW", "TL_01__TL_00", "TL_00", "EW"),
+        ("TL_10", "EW", "TL_10__TL_11", "TL_11", "EW"),
+        ("TL_11", "EW", "TL_11__TL_10", "TL_10", "EW"),
+        ("TL_00", "NS", "TL_00__TL_10", "TL_10", "NS"),
+        ("TL_10", "NS", "TL_10__TL_00", "TL_00", "NS"),
+        ("TL_01", "NS", "TL_01__TL_11", "TL_11", "NS"),
+        ("TL_11", "NS", "TL_11__TL_01", "TL_01", "NS"),
+    )
+
     def _record_green_wave(self, network: SumoNetwork) -> None:
-        checks: list[tuple[bool, bool]] = []
-        try:
-            upstream_tl00 = network.intersections["TL_00"]
-            tl10 = network.intersections["TL_10"]
-            tl11 = network.intersections["TL_11"]
-
-            load_to_tl10 = network._segment_vehicle_count("TL_00__TL_10")
-            if upstream_tl00.stage == "green" and upstream_tl00.current_plan_id == "NS" and load_to_tl10 > 0:
-                checks.append((True, tl10.stage == "green" and tl10.current_plan_id == "NS"))
-
-            load_to_tl11_from_tl10 = network._segment_vehicle_count("TL_10__TL_11")
-            upstream_tl10 = network.intersections["TL_10"]
-            if upstream_tl10.stage == "green" and upstream_tl10.current_plan_id == "EW" and load_to_tl11_from_tl10 > 0:
-                checks.append((True, tl11.stage == "green" and tl11.current_plan_id == "EW"))
-
-            load_to_tl11_from_tl00 = network._segment_vehicle_count("TL_00__TL_11")
-            if upstream_tl00.stage == "green" and upstream_tl00.current_plan_id == "EW" and load_to_tl11_from_tl00 > 0:
-                checks.append((True, tl11.stage == "green" and tl11.current_plan_id in {"NS_CURVE", "NS_SOUTH"}))
-        except Exception:
-            checks = []
-
-        for opportunity, hit in checks:
-            if not opportunity:
+        """For each perimeter flow, an *opportunity* exists when the upstream
+        controller is currently dispensing a platoon onto the segment. A *hit*
+        is when the downstream controller's matching group is also green so
+        the platoon passes through without stopping. Hits / opportunities is
+        the success rate the dashboard displays."""
+        for upstream_id, up_group, segment_edge, downstream_id, down_group in self._PERIMETER_DIRECTIONAL_FLOWS:
+            try:
+                upstream = network.intersections[upstream_id]
+                downstream = network.intersections[downstream_id]
+            except KeyError:
+                continue
+            if upstream.stage != "green" or upstream.current_plan_id != up_group:
+                continue
+            try:
+                load = network._segment_vehicle_count(segment_edge)
+            except Exception:
+                load = 0
+            if load <= 0:
                 continue
             self.green_wave_opportunities += 1
+            hit = downstream.stage == "green" and downstream.current_plan_id == down_group
             if hit:
                 self.green_wave_hits += 1
-                self._recent_green_wave_outcomes.append(1)
-            else:
-                self._recent_green_wave_outcomes.append(0)
+            self._recent_green_wave_outcomes.append(1 if hit else 0)
 
     def to_run_summary(
         self,
@@ -1470,6 +1546,7 @@ class SumoMetricsAccumulator:
             duration_ticks=self.tick_count,
             avg_wait_time_adaptive=avg_wait if mode == SignalMode.ADAPTIVE else 0.0,
             avg_wait_time_fixed=avg_wait if mode == SignalMode.FIXED else 0.0,
+            avg_queue_length=self.avg_queue_length(),
             total_wait_seconds=self.total_wait_time(),
             throughput_per_min=self.throughput_per_min(),
             avg_congestion=self.avg_congestion(),
@@ -1502,6 +1579,7 @@ class SumoMetricsAccumulator:
 
     def reset(self) -> None:
         self.total_wait_seconds = 0.0
+        self.total_queue_length = 0.0
         self.vehicles_completed = 0
         self.emergency_travel_seconds_total = 0.0
         self.emergency_vehicles_completed = 0
@@ -1516,6 +1594,7 @@ class SumoMetricsAccumulator:
         self._prev_preemption = False
         self._recent_completion_ticks.clear()
         self._recent_congestion_scores.clear()
+        self._recent_queue_lengths.clear()
         self._recent_green_wave_outcomes.clear()
         self._active_vehicle_traces.clear()
         self._timeseries = []

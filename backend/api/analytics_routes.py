@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 
 import analytics_ml
 import analytics_reports
+import analytics_summary
 import db
 from auth.middleware import require_any_auth
 
@@ -59,19 +60,17 @@ def build_router(engine) -> APIRouter:
             runs = [live_row, *[run for run in runs if run.get("run_id") != live.run_id]]
         return analytics_ml.build_predictions(runs, engine.get_current_state())
 
+    @router.get("/summary")
+    async def summary(_=Depends(require_any_auth)) -> dict:
+        return analytics_summary.summarize_runs(db.get_all_runs())
+
     @router.get("/reports")
     async def list_reports(_=Depends(require_any_auth)) -> list[dict]:
         return db.get_all_reports()
 
     @router.post("/reports/generate")
     async def generate_report(period_label: str = "7d", _=Depends(require_any_auth)) -> dict:
-        runs = db.get_all_runs()
-        live = engine.get_live_run_summary()
-        if live is not None:
-            live_row = live.model_dump()
-            live_row["mode"] = live.mode.value
-            runs = [live_row, *[run for run in runs if run.get("run_id") != live.run_id]]
-        report = analytics_reports.build_report(runs, period_label=period_label)
+        report = analytics_reports.build_report(db.get_all_runs(), period_label=period_label)
         db.save_report(report)
         return report
 
@@ -82,16 +81,17 @@ def build_router(engine) -> APIRouter:
             return {"error": "Report not found"}
         return report
 
-    @router.get("/reports/{report_id}/download", response_class=HTMLResponse)
-    async def download_report(report_id: str, _=Depends(require_any_auth)) -> HTMLResponse:
+    @router.get("/reports/{report_id}/download")
+    async def download_report(report_id: str, _=Depends(require_any_auth)):
         report = db.get_report(report_id)
         if not report:
             return HTMLResponse("<h1>Report not found</h1>", status_code=404)
-        html = analytics_reports.build_report_html(report)
-        return HTMLResponse(
-            content=html,
+        pdf_bytes = analytics_reports.build_report_pdf(report)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
             headers={
-                "Content-Disposition": f"attachment; filename=rwendo-report-{report_id}.html"
+                "Content-Disposition": f'attachment; filename="rwendo-report-{report_id}.pdf"'
             },
         )
 

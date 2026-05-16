@@ -36,5 +36,16 @@ export function useSimulation() {
     [socket],
   );
 
-  return { state, sendCommand, sendPreempt, connected };
+  const sendEmergencySpawn = useCallback(
+    (intersection_id, approach) => {
+      socket.emit('simulation:spawn_emergency', { intersection_id, approach });
+    },
+    [socket],
+  );
+
+  const sendEmergencySpawnRandom = useCallback(() => {
+    socket.emit('simulation:spawn_emergency_random', {});
+  }, [socket]);
+
+  return { state, sendCommand, sendPreempt, sendEmergencySpawn, sendEmergencySpawnRandom, connected };
 }

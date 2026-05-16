@@ -1,13 +1,32 @@
 import { useCallback, useEffect, useState } from 'react';
-import { get, patch, post } from '@shared/api/client';
+import { api, get, patch, post } from '@shared/api/client';
 
 export function useAuth(portal) {
   const portalQuery = `portal=${encodeURIComponent(portal || '')}`;
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const confirmSession = useCallback(async () => {
+    try {
+      const confirmedUser = await get(`/api/auth/me?${portalQuery}`);
+      setUser(confirmedUser);
+      return confirmedUser;
+    } catch (error) {
+      setUser(null);
+      const sessionError = new Error(
+        'Login succeeded, but the session was not available on the next request. Check that the app and API are opened on the same host.'
+      );
+      sessionError.status = 440;
+      sessionError.cause = error;
+      throw sessionError;
+    }
+  }, [portalQuery]);
+
   useEffect(() => {
     let cancelled = false;
+    api.setUnauthorizedHandler(() => {
+      if (!cancelled) setUser(null);
+    });
     get(`/api/auth/me?${portalQuery}`)
       .then((u) => {
         if (!cancelled) setUser(u);
@@ -20,21 +39,20 @@ export function useAuth(portal) {
       });
     return () => {
       cancelled = true;
+      api.setUnauthorizedHandler(null);
     };
   }, [portalQuery]);
 
   const login = useCallback(async (username, password) => {
     const path = portal === 'admin' ? '/api/auth/admin/login' : '/api/auth/public/login';
-    const u = await post(path, { username, password });
-    setUser(u);
-    return u;
-  }, [portal]);
+    await post(path, { username, password });
+    return confirmSession();
+  }, [confirmSession, portal]);
 
   const signup = useCallback(async (payload) => {
-    const u = await post('/api/auth/public/signup', payload);
-    setUser(u);
-    return u;
-  }, []);
+    await post('/api/auth/public/signup', payload);
+    return confirmSession();
+  }, [confirmSession]);
 
   const refreshUser = useCallback(async () => {
     const u = await get(`/api/auth/me?${portalQuery}`);

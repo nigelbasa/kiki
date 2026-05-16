@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CartesianGrid,
   Line,
@@ -9,13 +9,7 @@ import {
   YAxis,
 } from 'recharts';
 import { api } from '@shared/api/client';
-import { useSimulation } from '@shared/hooks/useSimulation';
 import { useSocket } from '@shared/hooks/useSocket';
-import { formatIntersectionName } from '@shared/utils/intersections';
-
-function runTime(run) {
-  return new Date(run?.ran_at || run?.ended_at || run?.started_at || 0).getTime();
-}
 
 function formatScenario(value) {
   if (value === 'off_peak') return 'Off-Peak';
@@ -23,58 +17,12 @@ function formatScenario(value) {
   return String(value || '').replace('_', ' ');
 }
 
-function formatTimestamp(value) {
+function formatDateTime(value) {
   if (!value) return 'N/A';
   return new Date(value).toLocaleString();
 }
 
-function average(values) {
-  if (!values.length) return 0;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function levelTone(level) {
-  if (level === 'high') return 'bg-rose-100 text-rose-700';
-  if (level === 'moderate') return 'bg-amber-100 text-amber-700';
-  return 'bg-emerald-100 text-emerald-700';
-}
-
-function percent(value) {
-  return `${(Number(value || 0) * 100).toFixed(1)}%`;
-}
-
-function formatIntersectionData(intersections, predictions) {
-  const predictedById = new Map((predictions?.junctions || []).map((row) => [row.id, row]));
-  return (intersections || []).map((intersection) => {
-    const predicted = predictedById.get(intersection.id);
-    return {
-      id: intersection.id,
-      name: formatIntersectionName(intersection.id, intersection.name),
-      current: predicted?.current || {
-        avg_wait_time: 0,
-        vehicle_count: 0,
-        throughput_vpm: 0,
-        spillback_events: 0,
-        avg_queue: 0,
-        avg_presence: 0,
-      },
-      history: predicted?.history || {
-        avg_wait_time: 0,
-        vehicle_count: 0,
-        throughput_vpm: 0,
-        spillback_events: 0,
-        avg_queue: 0,
-        avg_presence: 0,
-      },
-      predictive: predicted?.predictions || {
-        traffic_jam_risk: { probability: 0, level: 'low' },
-        signal_demand: { score: 0, level: 'low' },
-      },
-    };
-  });
-}
-
-function StatCard({ label, value, detail, accent = 'text-slate-900' }) {
+function MetricCard({ label, value, detail, accent = 'text-slate-900' }) {
   return (
     <div className="rounded-[22px] border border-slate-200 bg-white p-5 shadow-sm">
       <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{label}</div>
@@ -84,18 +32,18 @@ function StatCard({ label, value, detail, accent = 'text-slate-900' }) {
   );
 }
 
-function TrendChart({ title, rows, dataKey, formatter }) {
+function TrendChart({ title, data, dataKey, formatter, stroke }) {
   return (
     <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
       <div className="mb-4 text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">{title}</div>
       <div className="h-72">
         <ResponsiveContainer>
-          <LineChart data={rows}>
+          <LineChart data={data}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
             <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-            <YAxis tickFormatter={formatter} tick={{ fontSize: 12 }} />
+            <YAxis tick={{ fontSize: 12 }} tickFormatter={formatter} />
             <Tooltip formatter={(value) => formatter(value)} />
-            <Line type="monotone" dataKey={dataKey} stroke="#22c55e" strokeWidth={3} dot={false} />
+            <Line type="monotone" dataKey={dataKey} stroke={stroke} strokeWidth={3} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -103,30 +51,131 @@ function TrendChart({ title, rows, dataKey, formatter }) {
   );
 }
 
-function PredictionCard({ title, value, detail, level }) {
+function congestionTone(level) {
+  if (level === 'heavy') return 'bg-rose-100 text-rose-700';
+  if (level === 'moderate') return 'bg-amber-100 text-amber-700';
+  return 'bg-emerald-100 text-emerald-700';
+}
+
+function RealTimeConditions({ state, connected, autoRefreshSeconds, onAutoRefreshChange }) {
+  const vehicles = state?.visual_vehicles || [];
+  const movingVehicles = vehicles.filter((vehicle) => Number(vehicle.speed || 0) > 0.1);
+  const totalVolume = vehicles.length;
+  const avgSpeed = movingVehicles.length
+    ? movingVehicles.reduce((sum, vehicle) => sum + Number(vehicle.speed || 0), 0) / movingVehicles.length
+    : 0;
+  const monitoringPoints = state?.intersections?.length || 0;
+  const segments = state?.segments || [];
+  const summary = state?.network_summary || 'Clear roads';
+  const networkMode = String(state?.current_mode || 'fixed').toUpperCase();
+  const runStatus = !state?.started ? 'IDLE' : state?.running ? 'LIVE' : 'PAUSED';
+
   return (
-    <div className="rounded-[22px] border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{title}</div>
-        <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${levelTone(level)}`}>
-          {level}
-        </span>
+    <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-rwendo-accent">Real-Time Traffic Conditions</div>
+          <div className="mt-1 text-lg font-bold text-slate-900">Live network snapshot</div>
+          <div className="text-sm text-slate-500">
+            Updates every tick while the simulation runs. {connected ? 'Live socket connected.' : 'Socket offline.'}
+          </div>
+        </div>
+        <label className="flex items-center gap-2 rounded-full bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-700">
+          Auto-refresh
+          <select
+            value={autoRefreshSeconds}
+            onChange={(event) => onAutoRefreshChange(Number(event.target.value))}
+            className="rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-700 focus:outline-none"
+          >
+            <option value={0}>Off</option>
+            <option value={5}>5s</option>
+            <option value={15}>15s</option>
+            <option value={30}>30s</option>
+            <option value={60}>60s</option>
+          </select>
+        </label>
       </div>
-      <div className="mt-3 text-2xl font-bold text-slate-900">{value}</div>
-      <div className="mt-2 text-sm text-slate-500">{detail}</div>
+
+      <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <MetricCard
+          label="Current Volume"
+          value={`${totalVolume} vehicles`}
+          detail={`${movingVehicles.length} moving | ${totalVolume - movingVehicles.length} stopped`}
+          accent="text-rwendo-accent"
+        />
+        <MetricCard
+          label="Average Speed"
+          value={`${avgSpeed.toFixed(1)} m/s`}
+          detail={`${(avgSpeed * 3.6).toFixed(1)} km/h (moving vehicles only)`}
+          accent="text-emerald-700"
+        />
+        <MetricCard
+          label="Active Monitoring Points"
+          value={`${monitoringPoints}`}
+          detail={`Traffic signals in the multi-grid network`}
+        />
+        <MetricCard
+          label="System Status"
+          value={runStatus}
+          detail={`Mode: ${networkMode} | ${summary}`}
+          accent={runStatus === 'LIVE' ? 'text-emerald-700' : runStatus === 'PAUSED' ? 'text-amber-700' : 'text-slate-700'}
+        />
+      </div>
+
+      {segments.length > 0 && (
+        <div className="mt-5 rounded-[20px] border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Average speed by zone (road segment)</div>
+          <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {segments.map((segment) => (
+              <div key={segment.id} className="flex items-center justify-between rounded-[14px] bg-white px-3 py-2 text-sm">
+                <span className="font-semibold text-slate-700">{segment.id}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500">{Number(segment.vehicles_in_transit || 0)} veh</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] ${congestionTone(segment.congestion_level)}`}>
+                    {segment.congestion_level}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PeriodBadgeList({ title, items }) {
+  return (
+    <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">{title}</div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {items?.length ? (
+          items.map((item) => (
+            <span
+              key={item}
+              className="rounded-full bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-700"
+            >
+              {item}
+            </span>
+          ))
+        ) : (
+          <span className="text-sm text-slate-500">No stored adaptive history yet.</span>
+        )}
+      </div>
     </div>
   );
 }
 
 export default function AnalyticsPage() {
-  const { state, connected } = useSimulation();
-  const { socket } = useSocket();
-  const [runs, setRuns] = useState([]);
-  const [predictions, setPredictions] = useState(null);
+  const { socket, connected } = useSocket();
+  const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [liveState, setLiveState] = useState(null);
+  const [autoRefreshSeconds, setAutoRefreshSeconds] = useState(15);
+  const loadRef = useRef(null);
 
   const load = useCallback(async ({ silent = false } = {}) => {
     if (silent) {
@@ -137,12 +186,8 @@ export default function AnalyticsPage() {
 
     setError(null);
     try {
-      const [runList, predictionPayload] = await Promise.all([
-        api.get('/api/analytics/runs'),
-        api.get('/api/analytics/predictions'),
-      ]);
-      setRuns(runList.filter((run) => run.mode === 'adaptive' && (run.duration_ticks || 0) > 0));
-      setPredictions(predictionPayload);
+      const result = await api.get('/api/analytics/summary');
+      setSummary(result);
       setLastUpdated(new Date());
     } catch (err) {
       setError(err.message);
@@ -157,48 +202,42 @@ export default function AnalyticsPage() {
 
   useEffect(() => {
     load();
+    api.get('/api/simulation/state').then(setLiveState).catch(() => {});
   }, [load]);
+
+  loadRef.current = load;
+
+  useEffect(() => {
+    if (!autoRefreshSeconds) return undefined;
+    const interval = window.setInterval(() => {
+      loadRef.current?.({ silent: true });
+      api.get('/api/simulation/state').then(setLiveState).catch(() => {});
+    }, autoRefreshSeconds * 1000);
+    return () => window.clearInterval(interval);
+  }, [autoRefreshSeconds]);
 
   useEffect(() => {
     const onAnalyticsUpdate = (payload) => {
-      setRuns((payload?.runs || []).filter((run) => run.mode === 'adaptive' && (run.duration_ticks || 0) > 0));
-      setPredictions(payload?.predictions || null);
-      setRefreshing(false);
+      setSummary(payload?.summary || null);
       setLoading(false);
+      setRefreshing(false);
       setLastUpdated(new Date());
     };
+    const onTick = (tick) => setLiveState(tick);
 
     socket.on('analytics:update', onAnalyticsUpdate);
+    socket.on('simulation:tick', onTick);
     return () => {
       socket.off('analytics:update', onAnalyticsUpdate);
+      socket.off('simulation:tick', onTick);
     };
   }, [socket]);
 
-  const adaptiveRuns = useMemo(() => {
-    return [...runs].sort((a, b) => runTime(b) - runTime(a));
-  }, [runs]);
-
-  const latestAdaptiveRun = adaptiveRuns[0] || null;
-
-  const trendRows = useMemo(() => {
-    return [...adaptiveRuns]
-      .reverse()
-      .slice(-10)
-      .map((run, index) => ({
-        label: `Adaptive ${String(index + 1).padStart(2, '0')}`,
-        avgWait: Number(run.avg_wait_time || 0),
-        throughput: Number(run.throughput_per_min || 0),
-        congestion: Number(run.avg_congestion || 0),
-        vehicles: Number(run.vehicles_completed || 0),
-      }));
-  }, [adaptiveRuns]);
-
-  const intersectionRows = useMemo(() => {
-    return formatIntersectionData(state?.intersections || [], predictions);
-  }, [predictions, state?.intersections]);
-
-  const selectedJunction = intersectionRows[0] || null;
-  const networkPredictions = predictions?.network_predictions || {};
+  const averages = summary?.averages || {};
+  const latestRun = summary?.latest_run || null;
+  const trendRows = useMemo(() => summary?.trend_rows || [], [summary]);
+  const historyRows = summary?.history_rows || [];
+  const adaptiveRunCount = Number(summary?.adaptive_run_count || 0);
 
   return (
     <div className="h-full overflow-y-auto bg-slate-100 px-6 py-8">
@@ -207,7 +246,7 @@ export default function AnalyticsPage() {
           <div>
             <h1 className="text-3xl font-bold text-slate-900">Analytics</h1>
             <p className="mt-2 text-sm text-slate-500">
-              Adaptive-run analytics with per-junction data and model-backed traffic predictions.
+              Adaptive-only analytics averaged from stored completed runs.
             </p>
             <p className="mt-1 text-xs text-slate-400">
               {refreshing
@@ -216,237 +255,139 @@ export default function AnalyticsPage() {
                   ? `Last updated at ${lastUpdated.toLocaleTimeString()}`
                   : 'Waiting for initial analytics snapshot'}
               {connected ? ' | Live connection active' : ' | Live connection unavailable'}
-              {predictions?.sample_count ? ` | ML samples: ${predictions.sample_count}` : ''}
             </p>
           </div>
           <div className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600">
-            {connected ? 'Realtime analytics active' : 'Waiting for live analytics'}
+            {connected ? 'Adaptive analytics live' : 'Waiting for analytics feed'}
           </div>
         </div>
+
+        <RealTimeConditions
+          state={liveState}
+          connected={connected}
+          autoRefreshSeconds={autoRefreshSeconds}
+          onAutoRefreshChange={setAutoRefreshSeconds}
+        />
 
         {loading && <div className="text-sm text-slate-500">Loading analytics...</div>}
         {error && <div className="text-sm text-red-600">Failed to load: {error}</div>}
 
-        <div className="grid gap-4 md:grid-cols-4">
-          <StatCard
-            label="Live Average Delay"
-            value={`${(state?.current_avg_wait_time || 0).toFixed(1)}s`}
-            detail={`Scenario: ${formatScenario(state?.scenario || 'off_peak')} | Current mode: ${String(state?.current_mode || 'fixed')}`}
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <MetricCard
+            label="Average Wait Time"
+            value={`${Number(averages.avg_wait_time || 0).toFixed(1)}s`}
+            detail="Average from stored adaptive runs"
             accent="text-emerald-700"
           />
-          <StatCard
-            label="Latest Adaptive Throughput"
-            value={`${Number(latestAdaptiveRun?.throughput_per_min || 0).toFixed(1)} veh/min`}
-            detail={latestAdaptiveRun ? `Recorded ${formatTimestamp(latestAdaptiveRun.ran_at || latestAdaptiveRun.ended_at || latestAdaptiveRun.started_at)}` : 'No adaptive run recorded yet'}
+          <MetricCard
+            label="Average Throughput"
+            value={`${Number(averages.throughput_per_min || 0).toFixed(1)} veh/min`}
+            detail="Average adaptive network throughput"
             accent="text-rwendo-accent"
           />
-          <StatCard
-            label="Latest Adaptive Congestion"
-            value={Number(latestAdaptiveRun?.avg_congestion || 0).toFixed(1)}
-            detail={latestAdaptiveRun ? `Spillback events: ${latestAdaptiveRun.spillback_events || 0}` : 'No adaptive run recorded yet'}
+          <MetricCard
+            label="Average Queue Length"
+            value={Number(averages.avg_queue_length || 0).toFixed(1)}
+            detail="Average queued vehicles across the network"
           />
-          <StatCard
-            label="Adaptive Runs Stored"
-            value={String(adaptiveRuns.length)}
-            detail="Adaptive history is the baseline for analytics"
+          <MetricCard
+            label="Spillback Frequency"
+            value={Number(averages.spillback_frequency || 0).toFixed(1)}
+            detail="Average spillback events per adaptive run"
+          />
+          <MetricCard
+            label="Emergency Preemptions"
+            value={Number(averages.emergency_preemptions || 0).toFixed(1)}
+            detail="Average preemption count per adaptive run"
+          />
+          <MetricCard
+            label="Green Wave Success"
+            value={`${Number(averages.green_wave_success_rate || 0).toFixed(1)}%`}
+            detail={`Stored adaptive runs: ${adaptiveRunCount}`}
+            accent="text-emerald-700"
           />
         </div>
 
-        {!loading && adaptiveRuns.length === 0 && (
+        {!loading && adaptiveRunCount === 0 && (
           <div className="rounded-[24px] border border-dashed border-slate-300 bg-white p-10 text-center text-slate-500">
-            Run at least one adaptive simulation to populate analytics and train the lightweight predictors.
+            Complete and stop at least one adaptive simulation to build analytics history.
           </div>
         )}
 
-        {predictions && (
-          <div className="space-y-4">
-            <div>
-              <div className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">ML Prediction Phase</div>
-              <div className="mt-1 text-sm text-slate-500">
-                Predictions are generated from stored runs plus the live network state using a lightweight NumPy model.
-              </div>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-              <PredictionCard
-                title="Traffic Jam Risk"
-                value={percent(networkPredictions.traffic_jam_risk?.probability || 0)}
-                detail="Likelihood of jam conditions forming in the current network state"
-                level={networkPredictions.traffic_jam_risk?.level || 'low'}
-              />
-              <PredictionCard
-                title="Peak Hour"
-                value={percent(networkPredictions.peak_hour?.probability || 0)}
-                detail="How strongly the current traffic pattern resembles peak-hour behavior"
-                level={networkPredictions.peak_hour?.level || 'low'}
-              />
-              <PredictionCard
-                title="Signal Demand"
-                value={Number(networkPredictions.signal_demand?.score || 0).toFixed(1)}
-                detail="Predicted network signal pressure score"
-                level={networkPredictions.signal_demand?.level || 'low'}
-              />
-              <PredictionCard
-                title="Emergency Response"
-                value={`${Number(networkPredictions.emergency_response_time?.seconds || 0).toFixed(1)}s`}
-                detail="Predicted emergency response travel time under current conditions"
-                level={networkPredictions.emergency_response_time?.level || 'low'}
-              />
-              <PredictionCard
-                title="Green-Wave Stability"
-                value={`${Number(networkPredictions.green_wave_stability?.percent || 0).toFixed(1)}%`}
-                detail="Predicted green-wave success rate"
-                level={networkPredictions.green_wave_stability?.level || 'low'}
-              />
-            </div>
-          </div>
-        )}
-
-        {adaptiveRuns.length > 0 && (
+        {adaptiveRunCount > 0 && (
           <>
+            <div className="grid gap-4 xl:grid-cols-3">
+              <MetricCard
+                label="Latest Adaptive Run"
+                value={latestRun?.run_id || 'N/A'}
+                detail={latestRun ? `${formatScenario(latestRun.scenario)} | ${formatDateTime(latestRun.ended_at || latestRun.ran_at || latestRun.started_at)}` : 'No adaptive run stored yet'}
+              />
+              <PeriodBadgeList title="Peak Traffic Hours" items={summary?.peak_traffic_hours || []} />
+              <PeriodBadgeList title="Low Volume Periods" items={summary?.low_volume_periods || []} />
+            </div>
+
             <div className="grid gap-4 xl:grid-cols-2">
               <TrendChart
-                title="Adaptive Average Delay Trend"
-                rows={trendRows}
-                dataKey="avgWait"
+                title="Average Wait Time Trend"
+                data={trendRows}
+                dataKey="avg_wait_time"
                 formatter={(value) => `${Number(value || 0).toFixed(1)}s`}
+                stroke="#22c55e"
               />
               <TrendChart
-                title="Adaptive Throughput Trend"
-                rows={trendRows}
-                dataKey="throughput"
+                title="Throughput Trend"
+                data={trendRows}
+                dataKey="throughput_per_min"
                 formatter={(value) => `${Number(value || 0).toFixed(1)}`}
+                stroke="#f97316"
               />
               <TrendChart
-                title="Adaptive Congestion Trend"
-                rows={trendRows}
-                dataKey="congestion"
+                title="Queue Length Trend"
+                data={trendRows}
+                dataKey="avg_queue_length"
                 formatter={(value) => `${Number(value || 0).toFixed(1)}`}
+                stroke="#0f172a"
               />
               <TrendChart
-                title="Adaptive Completed Vehicles Trend"
-                rows={trendRows}
-                dataKey="vehicles"
-                formatter={(value) => `${Number(value || 0).toFixed(0)}`}
+                title="Spillback Trend"
+                data={trendRows}
+                dataKey="spillback_events"
+                formatter={(value) => `${Number(value || 0).toFixed(1)}`}
+                stroke="#ef4444"
               />
             </div>
 
             <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">
-                Per-Junction Data
+                Stored Adaptive Run History
               </div>
               <div className="overflow-x-auto">
                 <table className="min-w-full text-sm">
                   <thead>
                     <tr className="border-b border-slate-200 text-left text-slate-500">
-                      <th className="pb-3 pr-4 font-semibold">Junction</th>
-                      <th className="pb-3 pr-4 font-semibold">Current Wait</th>
-                      <th className="pb-3 pr-4 font-semibold">Current Vehicles</th>
-                      <th className="pb-3 pr-4 font-semibold">Current Throughput</th>
-                      <th className="pb-3 pr-4 font-semibold">Current Spillback</th>
-                      <th className="pb-3 pr-4 font-semibold">Historical Wait</th>
-                      <th className="pb-3 pr-4 font-semibold">Jam Risk</th>
-                      <th className="pb-3 font-semibold">Signal Demand</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-slate-700">
-                    {intersectionRows.map((row) => (
-                      <tr key={row.id} className="border-b border-slate-100">
-                        <td className="py-3 pr-4 font-semibold">{row.name}</td>
-                        <td className="py-3 pr-4">{Number(row.current.avg_wait_time || 0).toFixed(1)}s</td>
-                        <td className="py-3 pr-4">{Number(row.current.vehicle_count || 0).toFixed(0)}</td>
-                        <td className="py-3 pr-4">{Number(row.current.throughput_vpm || 0).toFixed(1)} veh/min</td>
-                        <td className="py-3 pr-4">{Number(row.current.spillback_events || 0).toFixed(0)}</td>
-                        <td className="py-3 pr-4">{Number(row.history.avg_wait_time || 0).toFixed(1)}s</td>
-                        <td className="py-3 pr-4">
-                          <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${levelTone(row.predictive.traffic_jam_risk?.level || 'low')}`}>
-                            {percent(row.predictive.traffic_jam_risk?.probability || 0)}
-                          </span>
-                        </td>
-                        <td className="py-3">
-                          <span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] ${levelTone(row.predictive.signal_demand?.level || 'low')}`}>
-                            {Number(row.predictive.signal_demand?.score || 0).toFixed(1)}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {selectedJunction && (
-              <div className="grid gap-4 xl:grid-cols-2">
-                <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">
-                    Junction Snapshot
-                  </div>
-                  <div className="mt-2 text-2xl font-bold text-slate-900">{selectedJunction.name}</div>
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <StatCard
-                      label="Current Queue"
-                      value={Number(selectedJunction.current.avg_queue || 0).toFixed(1)}
-                      detail={`Presence: ${Number(selectedJunction.current.avg_presence || 0).toFixed(1)}`}
-                    />
-                    <StatCard
-                      label="Historical Throughput"
-                      value={`${Number(selectedJunction.history.throughput_vpm || 0).toFixed(1)} veh/min`}
-                      detail={`Historical wait: ${Number(selectedJunction.history.avg_wait_time || 0).toFixed(1)}s`}
-                      accent="text-rwendo-accent"
-                    />
-                  </div>
-                </div>
-
-                <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">
-                    Junction Prediction
-                  </div>
-                  <div className="mt-2 text-2xl font-bold text-slate-900">{selectedJunction.name}</div>
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <PredictionCard
-                      title="Jam Risk"
-                      value={percent(selectedJunction.predictive.traffic_jam_risk?.probability || 0)}
-                      detail="Predicted junction-level jam formation risk"
-                      level={selectedJunction.predictive.traffic_jam_risk?.level || 'low'}
-                    />
-                    <PredictionCard
-                      title="Signal Demand"
-                      value={Number(selectedJunction.predictive.signal_demand?.score || 0).toFixed(1)}
-                      detail="Predicted signal pressure for this junction"
-                      level={selectedJunction.predictive.signal_demand?.level || 'low'}
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="mb-4 text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">
-                Recent Adaptive Run History
-              </div>
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-200 text-left text-slate-500">
+                      <th className="pb-3 pr-4 font-semibold">Simulation No.</th>
                       <th className="pb-3 pr-4 font-semibold">Recorded At</th>
                       <th className="pb-3 pr-4 font-semibold">Scenario</th>
-                      <th className="pb-3 pr-4 font-semibold">Average Delay</th>
+                      <th className="pb-3 pr-4 font-semibold">Avg Wait Time</th>
                       <th className="pb-3 pr-4 font-semibold">Throughput</th>
-                      <th className="pb-3 pr-4 font-semibold">Congestion</th>
-                      <th className="pb-3 pr-4 font-semibold">Vehicles Completed</th>
-                      <th className="pb-3 font-semibold">Spillback Events</th>
+                      <th className="pb-3 pr-4 font-semibold">Emergency Preemption</th>
+                      <th className="pb-3 pr-4 font-semibold">Queue Length</th>
+                      <th className="pb-3 pr-4 font-semibold">Spillback</th>
+                      <th className="pb-3 font-semibold">Green Wave</th>
                     </tr>
                   </thead>
                   <tbody className="text-slate-700">
-                    {adaptiveRuns.slice(0, 8).map((run) => (
-                      <tr key={run.run_id} className="border-b border-slate-100">
-                        <td className="py-3 pr-4">{formatTimestamp(run.ran_at || run.ended_at || run.started_at)}</td>
+                    {historyRows.map((run, index) => (
+                      <tr key={run.run_id || `${run.recorded_at}-${index}`} className="border-b border-slate-100">
+                        <td className="py-3 pr-4 font-semibold">{adaptiveRunCount - index}</td>
+                        <td className="py-3 pr-4">{formatDateTime(run.recorded_at)}</td>
                         <td className="py-3 pr-4">{formatScenario(run.scenario)}</td>
                         <td className="py-3 pr-4">{Number(run.avg_wait_time || 0).toFixed(1)}s</td>
                         <td className="py-3 pr-4">{Number(run.throughput_per_min || 0).toFixed(1)} veh/min</td>
-                        <td className="py-3 pr-4">{Number(run.avg_congestion || 0).toFixed(1)}</td>
-                        <td className="py-3 pr-4">{run.vehicles_completed || 0}</td>
-                        <td className="py-3">{run.spillback_events || 0}</td>
+                        <td className="py-3 pr-4">{Number(run.preemption_events || 0).toFixed(0)}</td>
+                        <td className="py-3 pr-4">{Number(run.avg_queue_length || 0).toFixed(1)}</td>
+                        <td className="py-3 pr-4">{Number(run.spillback_events || 0).toFixed(0)}</td>
+                        <td className="py-3">{Number(run.green_wave_success_rate || 0).toFixed(1)}%</td>
                       </tr>
                     ))}
                   </tbody>

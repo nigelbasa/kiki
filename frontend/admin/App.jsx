@@ -7,6 +7,7 @@ import NotificationsPage from './pages/NotificationsPage.jsx';
 import ReportsPage from './pages/ReportsPage.jsx';
 import SettingsPage from './pages/SettingsPage.jsx';
 import ProfilePage from './pages/ProfilePage.jsx';
+import NotificationToaster from './components/NotificationToaster.jsx';
 import { useSimulation } from '@shared/hooks/useSimulation';
 import { useDetection } from '@shared/hooks/useDetection';
 
@@ -77,7 +78,8 @@ const NAV_ITEMS = [
   { id: 'analytics', label: 'Analytics', icon: ChartIcon, path: '/analytics' },
   { id: 'reports', label: 'Reports', icon: ReportIcon, path: '/reports' },
   { id: 'notifications', label: 'Notifications', icon: BellIcon, path: '/notifications' },
-  { id: 'detection', label: 'Detection', icon: CameraIcon, path: '/detection' },
+  // Detection page is hidden for now (single bundled demo video).
+  // Route below stays accessible via direct URL.
   { id: 'settings', label: 'Settings', icon: GearIcon, path: '/settings' },
   { id: 'profile', label: 'Profile', icon: GearIcon, path: '/profile' },
 ];
@@ -93,6 +95,7 @@ export default function App({ user, onLogout }) {
 
   return (
     <div className="flex h-screen w-screen bg-gray-100">
+      <NotificationToaster />
       <aside className="flex w-60 flex-col border-r border-gray-200 bg-white">
         <div className="flex items-center gap-2 border-b border-gray-200 px-4 py-4">
           <div className="rounded-md bg-rwendo-accent/10 p-2 text-rwendo-accent">
