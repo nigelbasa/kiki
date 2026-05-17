@@ -10,6 +10,7 @@ import {
   YAxis,
 } from 'recharts';
 import ErrorBoundary from '@shared/components/ErrorBoundary';
+import { probeWebGL, WebGLUnavailableNotice } from '@shared/components/WebGLAvailability';
 import { api } from '@shared/api/client';
 import { useSimulation } from '@shared/hooks/useSimulation';
 import { formatIntersectionName } from '@shared/utils/intersections';
@@ -703,6 +704,35 @@ function ComparisonChart({
 }
 
 
+function CanvasMount({ state, boundaryKey, onRetry }) {
+  // Probe synchronously on first render so we never even try to mount the
+  // r3f canvas on a machine that can't give us a WebGL context. Saves the
+  // user from a generic "Something went wrong" error and tells them what
+  // to do.
+  const probe = probeWebGL();
+  if (!probe.ok) {
+    return (
+      <div className="rounded-[30px] border border-slate-200 bg-white p-4 shadow-sm">
+        <WebGLUnavailableNotice reason={probe.reason} onRetry={onRetry} />
+      </div>
+    );
+  }
+  const fallback = (error, reset) => (
+    <div className="w-full">
+      <WebGLUnavailableNotice reason={error?.message || 'runtime context lost'} onRetry={() => { reset(); onRetry?.(); }} />
+    </div>
+  );
+  return (
+    <div className="rounded-[30px] border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex justify-center">
+        <ErrorBoundary resetKey={boundaryKey} fallback={fallback}>
+          <SimulationCanvas3D state={state} resetToken={boundaryKey} />
+        </ErrorBoundary>
+      </div>
+    </div>
+  );
+}
+
 export default function SimulationPage({ user, detection }) {
   const { state, sendCommand, sendEmergencySpawnRandom, connected } = useSimulation();
   const [boundaryKey, setBoundaryKey] = useState(0);
@@ -1024,13 +1054,7 @@ export default function SimulationPage({ user, detection }) {
 
         <DetectionPanel detection={detection} />
 
-        <div className="rounded-[30px] border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="flex justify-center">
-            <ErrorBoundary resetKey={boundaryKey}>
-              <SimulationCanvas3D state={state} resetToken={boundaryKey} />
-            </ErrorBoundary>
-          </div>
-        </div>
+        <CanvasMount state={state} boundaryKey={boundaryKey} onRetry={() => setBoundaryKey((v) => v + 1)} />
 
         <div className="grid gap-4 lg:grid-cols-5">
           <StatCard
